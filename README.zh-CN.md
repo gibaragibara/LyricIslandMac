@@ -90,6 +90,7 @@ dotnet build
 - 推送形如 `v1.0.0` 的 tag 时，会自动构建 macOS `.dmg`
 - Workflow 会把 DMG 上传到对应的 GitHub Release
 - 也可以在 `Actions > Release DMG` 里手动触发
+- Workflow 已升级到兼容 Node 24 的 action 版本
 
 ## Spotify 配置
 

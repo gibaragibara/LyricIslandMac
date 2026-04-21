@@ -85,7 +85,7 @@ extension Array where Element == LyricLine {
                 break
             }
             if progressMs < line.startTimeMs {
-                current = nil
+                current = index > 0 ? ordered[index - 1] : nil
                 next = line
                 break
             }

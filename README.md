@@ -90,6 +90,7 @@ This repository includes `.github/workflows/release-dmg.yml`.
 - Pushing a tag like `v1.0.0` builds the macOS `.dmg`
 - The workflow uploads the DMG to the matching GitHub Release
 - You can also run it manually from `Actions > Release DMG`
+- The workflow uses Node 24 compatible GitHub Actions versions
 
 ## Spotify Setup
 

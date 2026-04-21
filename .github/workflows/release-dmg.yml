@@ -12,13 +12,15 @@ permissions:
 jobs:
   build-and-release:
     runs-on: macos-15
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
 
@@ -39,14 +41,14 @@ jobs:
           cp "dist/LyricIslandMac.dmg" "release-assets/LyricIslandMac-${GITHUB_REF_NAME}.dmg"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LyricIslandMac-dmg
           path: release-assets/LyricIslandMac-${{ github.ref_name }}.dmg
 
       - name: Publish GitHub release asset
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: release-assets/LyricIslandMac-${{ github.ref_name }}.dmg
           generate_release_notes: true
