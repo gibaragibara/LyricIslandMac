@@ -82,6 +82,10 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Slider(value: $model.overlayScale, in: 0.8...1.3, step: 0.01)
+
+                Text(model.overlayVisibilityStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("范围") {

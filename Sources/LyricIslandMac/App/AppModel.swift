@@ -86,7 +86,6 @@ final class AppModel: ObservableObject {
             refreshOverlayIfNeeded()
         }
     }
-
     let selectedSources: [LyricsSource] = [.spotify, .qqMusic, .netease]
 
     private let overlayController = OverlayPanelController()
@@ -96,6 +95,7 @@ final class AppModel: ObservableObject {
     private var started = false
     private var ticksSinceNetworkSync = 0
     private var lastLyricsTrackID: String?
+    private var overlayAllowedByUser = true
     private static let localTickIntervalSeconds: TimeInterval = 0.1
     private static let playbackNetworkSyncIntervalTicks: Int = 80
 
@@ -129,8 +129,8 @@ final class AppModel: ObservableObject {
         lyricsPayload = nil
         currentLine = nil
         nextLine = nil
-        overlayVisible = true
-        overlayController.show(model: makeOverlayModel())
+        overlayAllowedByUser = true
+        applyOverlayVisibilityPolicy()
         Task { @MainActor in
             do {
                 _ = try await ensureSpotifyAccessToken(forceRefresh: false)
@@ -147,11 +147,16 @@ final class AppModel: ObservableObject {
     }
 
     func toggleOverlay() {
-        overlayVisible.toggle()
-        if overlayVisible {
-            overlayController.show(model: makeOverlayModel())
+        overlayAllowedByUser.toggle()
+        applyOverlayVisibilityPolicy()
+        if overlayAllowedByUser {
+            if !playback.isPlaying {
+                statusText = "歌词岛已启用，恢复播放后会自动显示。"
+            } else {
+                statusText = "歌词岛悬浮层已显示。"
+            }
         } else {
-            overlayController.hide()
+            statusText = "歌词岛悬浮层已手动关闭。"
         }
     }
 
@@ -170,6 +175,7 @@ final class AppModel: ObservableObject {
                     nextLine = nil
                 }
                 updateLyricCursor()
+                applyOverlayVisibilityPolicy()
                 refreshOverlayIfNeeded()
                 if trackChanged || lyricsPayload == nil {
                     fetchLyricsFromHelper(autoTriggered: true)
@@ -294,6 +300,23 @@ final class AppModel: ObservableObject {
         overlayController.show(model: makeOverlayModel())
     }
 
+    private func applyOverlayVisibilityPolicy() {
+        let shouldShow = overlayAllowedByUser && playback.isPlaying
+        guard shouldShow != overlayVisible else {
+            if shouldShow {
+                overlayController.show(model: makeOverlayModel())
+            }
+            return
+        }
+
+        overlayVisible = shouldShow
+        if shouldShow {
+            overlayController.show(model: makeOverlayModel())
+        } else {
+            overlayController.hide()
+        }
+    }
+
     private func makeOverlayModel() -> OverlayViewModel {
         let subline = currentLine?.subtext?.trimmingCharacters(in: .whitespacesAndNewlines)
         let progress = currentLine?.karaokeProgress(at: playback.progressMs) ?? 0
@@ -355,6 +378,22 @@ final class AppModel: ObservableObject {
 
     var overlayScalePercentText: String {
         "\(Int((overlayScale * 100).rounded()))%"
+    }
+
+    var overlayToggleButtonTitle: String {
+        if overlayAllowedByUser {
+            return playback.isPlaying ? "手动关闭歌词岛悬浮层" : "关闭歌词岛自动显示"
+        }
+        return playback.isPlaying ? "手动显示歌词岛悬浮层" : "允许播放时自动显示歌词岛"
+    }
+
+    var overlayVisibilityStatusText: String {
+        if !overlayAllowedByUser {
+            return "已手动关闭，恢复播放也不会自动显示。"
+        }
+        return playback.isPlaying
+            ? "播放中：歌词岛会自动显示。"
+            : "已暂停：歌词岛会自动隐藏。"
     }
 
     var overlayScreenOptions: [OverlayScreenOption] {

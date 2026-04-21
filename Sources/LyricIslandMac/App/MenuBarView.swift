@@ -131,12 +131,16 @@ struct MenuBarView: View {
                         .foregroundStyle(.secondary)
                 }
                 Slider(value: $model.overlayScale, in: 0.8...1.3, step: 0.01)
+
+                Text(model.overlayVisibilityStatusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                Button(model.overlayVisible ? "隐藏歌词岛悬浮层" : "显示歌词岛悬浮层") {
+                Button(model.overlayToggleButtonTitle) {
                     model.toggleOverlay()
                 }
 
