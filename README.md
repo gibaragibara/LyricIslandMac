@@ -97,6 +97,14 @@ Build a `.dmg` image:
 
 Artifacts are written to `dist/`. The packaged app bundles the local lyrics helper output under `Contents/Resources/LyricsService/`, but the target machine still needs a compatible .NET runtime.
 
+Current GitHub Releases provide an unsigned DMG. On first launch after dragging the app into `Applications`, macOS may block it with a damaged or unidentified developer warning. Remove the quarantine flag once on the target machine:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/LyricIslandMac.app
+```
+
+If the app is not in `Applications` yet, replace the path with the real location.
+
 ### GitHub Actions Release
 
 This repository includes `.github/workflows/release-dmg.yml`.
@@ -105,6 +113,8 @@ This repository includes `.github/workflows/release-dmg.yml`.
 - The workflow uploads the DMG to the matching GitHub Release
 - You can also run it manually from `Actions > Release DMG`
 - The workflow uses Node 24 compatible GitHub Actions versions
+- The workflow currently builds and uploads an unsigned DMG
+- Users may need to run `xattr -dr com.apple.quarantine /Applications/LyricIslandMac.app` once after installation
 
 ## Spotify Setup
 

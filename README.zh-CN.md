@@ -97,6 +97,14 @@ dotnet build
 
 产物会输出到 `dist/`。打包后的 app 会把本地歌词 helper 一并放进 `Contents/Resources/LyricsService/`，但目标机器仍然需要可用的 .NET runtime。
 
+当前 GitHub Release 提供的是未签名 DMG。首次将 app 拖到 `Applications` 后，macOS 可能会弹出“已损坏”或“无法验证开发者”之类的提示。目标机器上执行一次下面的命令即可去掉隔离标记：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/LyricIslandMac.app
+```
+
+如果 app 还不在 `Applications` 目录里，把路径改成实际位置即可。
+
 ### GitHub Actions 自动发布
 
 仓库已经包含 `.github/workflows/release-dmg.yml`。
@@ -105,6 +113,8 @@ dotnet build
 - Workflow 会把 DMG 上传到对应的 GitHub Release
 - 也可以在 `Actions > Release DMG` 里手动触发
 - Workflow 已升级到兼容 Node 24 的 action 版本
+- 当前 workflow 生成并上传的是未签名 DMG
+- 用户安装后可能需要执行一次 `xattr -dr com.apple.quarantine /Applications/LyricIslandMac.app`
 
 ## Spotify 配置
 
