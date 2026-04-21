@@ -67,6 +67,30 @@ Default helper path:
 /Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll
 ```
 
+## Packaging
+
+Build a distributable `.app` bundle:
+
+```bash
+./scripts/build_app.sh
+```
+
+Build a `.dmg` image:
+
+```bash
+./scripts/build_dmg.sh
+```
+
+Artifacts are written to `dist/`. The packaged app bundles the local lyrics helper output under `Contents/Resources/LyricsService/`, but the target machine still needs a compatible .NET runtime.
+
+### GitHub Actions Release
+
+This repository includes `.github/workflows/release-dmg.yml`.
+
+- Pushing a tag like `v1.0.0` builds the macOS `.dmg`
+- The workflow uploads the DMG to the matching GitHub Release
+- You can also run it manually from `Actions > Release DMG`
+
 ## Spotify Setup
 
 1. Create or open your app in Spotify Developer Dashboard.

@@ -67,6 +67,30 @@ dotnet build
 /Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll
 ```
 
+## 打包
+
+生成可分发的 `.app`：
+
+```bash
+./scripts/build_app.sh
+```
+
+生成 `.dmg`：
+
+```bash
+./scripts/build_dmg.sh
+```
+
+产物会输出到 `dist/`。打包后的 app 会把本地歌词 helper 一并放进 `Contents/Resources/LyricsService/`，但目标机器仍然需要可用的 .NET runtime。
+
+### GitHub Actions 自动发布
+
+仓库已经包含 `.github/workflows/release-dmg.yml`。
+
+- 推送形如 `v1.0.0` 的 tag 时，会自动构建 macOS `.dmg`
+- Workflow 会把 DMG 上传到对应的 GitHub Release
+- 也可以在 `Actions > Release DMG` 里手动触发
+
 ## Spotify 配置
 
 1. 在 Spotify Developer Dashboard 中创建或打开你的应用。

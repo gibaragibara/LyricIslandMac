@@ -412,7 +412,32 @@ final class AppModel: ObservableObject {
     }()
 
     private static var defaultHelperExecutablePath: String {
-        "/Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll"
+        let fileManager = FileManager.default
+
+        if let resourceURL = Bundle.main.resourceURL {
+            let bundledExecutable = resourceURL
+                .appendingPathComponent("LyricsService", isDirectory: true)
+                .appendingPathComponent("LyricIsland.LyricsService")
+                .path
+            if fileManager.fileExists(atPath: bundledExecutable) {
+                return bundledExecutable
+            }
+
+            let bundledDLL = resourceURL
+                .appendingPathComponent("LyricsService", isDirectory: true)
+                .appendingPathComponent("LyricIsland.LyricsService.dll")
+                .path
+            if fileManager.fileExists(atPath: bundledDLL) {
+                return bundledDLL
+            }
+        }
+
+        let repoExecutable = "/Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService"
+        if fileManager.fileExists(atPath: repoExecutable) {
+            return repoExecutable
+        }
+
+        return "/Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll"
     }
 }
 

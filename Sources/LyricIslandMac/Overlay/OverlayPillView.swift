@@ -88,7 +88,45 @@ struct OverlayPillView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    @ViewBuilder
     private var compactContent: some View {
+        if model.hasNotch {
+            notchCompactContent
+        } else {
+            originalCompactContent
+        }
+    }
+
+    private var notchCompactContent: some View {
+        ZStack(alignment: .top) {
+            // Text below the notch
+            VStack(alignment: .center, spacing: 2) {
+                KaraokeLineText(text: model.compactPrimaryLine, progress: model.currentProgress, alignment: .center)
+                    .font(.system(size: scaled(16), weight: .semibold))
+                    .lineLimit(1)
+                    .animation(.linear(duration: 0.08), value: model.currentProgress)
+
+                Text(model.compactSecondaryLine)
+                    .font(.system(size: scaled(12), weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.64))
+                    .lineLimit(1)
+            }
+            .padding(.top, model.safeAreaTop + scaled(4))
+            .padding(.horizontal, scaled(18))
+            
+            // Images beside the notch
+            HStack {
+                compactLeadingBadge
+                Spacer()
+                CompactArtworkView(urlString: model.artworkURL, overlayScale: model.overlayScale)
+            }
+            .padding(.horizontal, scaled(18))
+            .frame(height: max(50 * model.overlayScale, model.safeAreaTop))
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var originalCompactContent: some View {
         HStack(spacing: 12) {
             compactLeadingBadge
 
@@ -115,9 +153,16 @@ struct OverlayPillView: View {
     }
 
     private var surfaceShape: NotchSurfaceShape {
-        NotchSurfaceShape(
+        let isPill = !model.hasNotch
+        let targetBottomRadius: CGFloat
+        if isPill {
+            targetBottomRadius = model.isExpanded ? 36 : 999
+        } else {
+            targetBottomRadius = model.isExpanded ? 36 : 14
+        }
+        return NotchSurfaceShape(
             topCornerRadius: (model.isExpanded ? 22 : 10) * model.overlayScale,
-            bottomCornerRadius: (model.isExpanded ? 36 : 999) * model.overlayScale
+            bottomCornerRadius: targetBottomRadius * model.overlayScale
         )
     }
 

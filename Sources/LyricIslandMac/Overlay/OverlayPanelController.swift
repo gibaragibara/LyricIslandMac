@@ -46,12 +46,15 @@ struct OverlayViewModel {
     var collapsedHeight: CGFloat = 24
     var expandedWidth: CGFloat = 500
     var expandedHeight: CGFloat = 128
+    var hasNotch: Bool = false
+    var safeAreaTop: CGFloat = 0
 }
 
 @MainActor
 final class OverlayPanelController {
     private var panel: NSPanel?
     private var baseModel: OverlayViewModel?
+    private var renderedModel: OverlayViewModel?
     private var displayMode: OverlayDisplayMode = .compact
     private var preferredScreenID: String?
     private var isPointerHoveringVisibleSurface = false
@@ -72,6 +75,7 @@ final class OverlayPanelController {
 
     func hide() {
         panel?.orderOut(nil)
+        renderedModel = nil
         updatePointerHovering(force: false)
     }
 
@@ -117,11 +121,12 @@ final class OverlayPanelController {
         let baseElementWidth = 106.0 * scale + 24.0
         let targetAutoWidth = baseElementWidth + textWidth + 16.0
         
-        let hasNotch = (screen?.safeAreaInsets.top ?? 0) > 0
-        let minWidth: CGFloat = hasNotch ? (collapsed.width + 100 * scale) : (240 * scale)
+        let safeAreaTop = screen?.safeAreaInsets.top ?? 0
+        let hasNotch = safeAreaTop > 0
+        let minWidth: CGFloat = hasNotch ? (collapsed.width + 140 * scale) : (240 * scale)
         
         let collapsedWidth = min(max(targetAutoWidth, minWidth), 640 * scale)
-        let collapsedHeight = max(50, ((screen?.islandClosedHeight ?? 24) + 26) * scale)
+        let collapsedHeight = safeAreaTop + 50 * scale
         
         let expandedPrimaryFont = NSFont.systemFont(ofSize: 15 * scale, weight: .semibold)
         let expandedSublineFont = NSFont.systemFont(ofSize: 11.5 * scale, weight: .medium)
@@ -152,6 +157,9 @@ final class OverlayPanelController {
         decorated.collapsedHeight = collapsedHeight
         decorated.expandedWidth = expandedWidth
         decorated.expandedHeight = expandedHeight
+        decorated.hasNotch = hasNotch
+        decorated.safeAreaTop = safeAreaTop
+        renderedModel = decorated
 
         if let host = panel.contentView as? NSHostingView<OverlayPillView> {
             host.rootView = OverlayPillView(model: decorated)
@@ -246,7 +254,7 @@ final class OverlayPanelController {
     }
 
     private func isPointerInsideVisibleSurface() -> Bool {
-        guard let panel, panel.isVisible, let model = baseModel else { return false }
+        guard let panel, panel.isVisible, let model = renderedModel ?? baseModel else { return false }
         let pointer = NSEvent.mouseLocation
         return visibleSurfaceFrame(in: panel.frame, model: model).contains(pointer)
     }
