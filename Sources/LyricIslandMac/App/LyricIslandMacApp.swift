@@ -2,15 +2,17 @@ import SwiftUI
 
 @main
 struct LyricIslandMacApp: App {
-    @StateObject private var model = AppModel()
+    private let model: AppModel
+
+    init() {
+        model = AppModel()
+        model.start()
+    }
 
     var body: some Scene {
         MenuBarExtra("歌词岛", systemImage: "music.note") {
             MenuBarView(model: model)
                 .frame(width: 340)
-                .onAppear {
-                    model.start()
-                }
         }
         .menuBarExtraStyle(.window)
 

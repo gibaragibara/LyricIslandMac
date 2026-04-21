@@ -1,5 +1,7 @@
 # LyricIslandMac
 
+[中文说明](README.zh-CN.md)
+
 LyricIslandMac is a macOS menu bar app that shows synced lyrics in a Dynamic Island style overlay. The app uses native `SwiftUI + AppKit` for the shell and a local `.NET` helper service for lyric lookup.
 
 ## Features

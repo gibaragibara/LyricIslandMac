@@ -122,7 +122,25 @@ final class OverlayPanelController {
         
         let collapsedWidth = min(max(targetAutoWidth, minWidth), 640 * scale)
         let collapsedHeight = max(50, ((screen?.islandClosedHeight ?? 24) + 26) * scale)
-        let expandedWidth = min(max(collapsedWidth + (12 * scale), Self.baseExpandedWidth * scale), 680 * scale)
+        
+        let expandedPrimaryFont = NSFont.systemFont(ofSize: 15 * scale, weight: .semibold)
+        let expandedSublineFont = NSFont.systemFont(ofSize: 11.5 * scale, weight: .medium)
+        let expandedNextLineFont = NSFont.systemFont(ofSize: 10.5 * scale, weight: .regular)
+        
+        let expLineWidth = (decorated.currentLine as NSString).size(withAttributes: [.font: expandedPrimaryFont]).width
+        let expSublineWidth = ((decorated.currentSubline ?? "") as NSString).size(withAttributes: [.font: expandedSublineFont]).width
+        let expNextLineWidth = ((decorated.nextLine ?? "") as NSString).size(withAttributes: [.font: expandedNextLineFont]).width
+        
+        let titleFont = NSFont.systemFont(ofSize: 13 * scale, weight: .semibold)
+        let subtitleFont = NSFont.systemFont(ofSize: 10.5 * scale, weight: .regular)
+        let titleWidth = (decorated.title as NSString).size(withAttributes: [.font: titleFont]).width
+        let subtitleWidth = (decorated.subtitle as NSString).size(withAttributes: [.font: subtitleFont]).width
+        let headerTextWidth = max(titleWidth, subtitleWidth)
+        
+        let maxExpandedTextWidth = max(expLineWidth, expSublineWidth, expNextLineWidth)
+        let expandedTargetWidth = max(maxExpandedTextWidth, headerTextWidth + 90 * scale) + 68 * scale
+        
+        let expandedWidth = min(max(expandedTargetWidth, collapsedWidth + 24 * scale), 720 * scale)
         let expandedHeight = max(108, Self.expandedHeight * scale)
 
         decorated.isExpanded = displayMode.isExpanded
@@ -147,16 +165,16 @@ final class OverlayPanelController {
     private func makePanel() -> NSPanel {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: Self.baseExpandedWidth, height: Self.expandedHeight),
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.level = .statusBar
+        panel.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .fullScreenDisallowsTiling, .ignoresCycle, .stationary]
         panel.isMovable = false
         panel.ignoresMouseEvents = true
 
@@ -236,7 +254,7 @@ final class OverlayPanelController {
     private func visibleSurfaceFrame(in panelFrame: NSRect, model: OverlayViewModel) -> NSRect {
         let isExpanded = displayMode.isExpanded
         let surfaceWidth = isExpanded ? model.expandedWidth : model.collapsedWidth
-        let surfaceHeight = isExpanded ? model.expandedHeight : max(72, model.collapsedHeight)
+        let surfaceHeight = isExpanded ? model.expandedHeight : model.collapsedHeight
         let originX = panelFrame.midX - surfaceWidth / 2
         let originY = panelFrame.maxY - surfaceHeight
         return NSRect(x: originX, y: originY, width: surfaceWidth, height: surfaceHeight)

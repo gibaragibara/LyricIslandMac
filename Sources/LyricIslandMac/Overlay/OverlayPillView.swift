@@ -12,6 +12,7 @@ struct OverlayPillView: View {
                 .contentShape(surfaceShape)
         }
         .preferredColorScheme(.dark)
+        .ignoresSafeArea()
         .animation(.spring(response: 0.26, dampingFraction: 0.84), value: model.isExpanded)
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: surfaceWidth)
         .animation(.easeInOut(duration: 0.18), value: model.isPointerHovering)
@@ -39,7 +40,7 @@ struct OverlayPillView: View {
     }
 
     private var expandedContent: some View {
-        VStack(alignment: .leading, spacing: scaled(6)) {
+        VStack(alignment: .center, spacing: scaled(6)) {
             HStack(spacing: scaled(10)) {
                 compactLeadingBadge
 
@@ -63,7 +64,7 @@ struct OverlayPillView: View {
                 .fill(Color.white.opacity(0.07))
                 .frame(height: 1)
 
-            KaraokeLineText(text: model.currentLine, progress: model.currentProgress)
+            KaraokeLineText(text: model.currentLine, progress: model.currentProgress, alignment: .center)
                 .font(.system(size: scaled(15), weight: .semibold))
                 .lineLimit(1)
                 .animation(.linear(duration: 0.08), value: model.currentProgress)
@@ -115,8 +116,8 @@ struct OverlayPillView: View {
 
     private var surfaceShape: NotchSurfaceShape {
         NotchSurfaceShape(
-            topCornerRadius: model.isExpanded ? 22 : 6,
-            bottomCornerRadius: model.isExpanded ? 36 : 20
+            topCornerRadius: (model.isExpanded ? 22 : 10) * model.overlayScale,
+            bottomCornerRadius: (model.isExpanded ? 36 : 999) * model.overlayScale
         )
     }
 
@@ -128,7 +129,7 @@ struct OverlayPillView: View {
         if model.isExpanded {
             return model.expandedHeight
         }
-        return max(72, model.collapsedHeight)
+        return model.collapsedHeight
     }
 
     private func scaled(_ value: CGFloat) -> CGFloat {
