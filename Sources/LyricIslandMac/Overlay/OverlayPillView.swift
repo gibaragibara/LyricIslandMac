@@ -153,13 +153,7 @@ struct OverlayPillView: View {
     }
 
     private var surfaceShape: NotchSurfaceShape {
-        let isPill = !model.hasNotch
-        let targetBottomRadius: CGFloat
-        if isPill {
-            targetBottomRadius = model.isExpanded ? 36 : 999
-        } else {
-            targetBottomRadius = model.isExpanded ? 36 : 14
-        }
+        let targetBottomRadius: CGFloat = model.isExpanded ? 36 : 999
         return NotchSurfaceShape(
             topCornerRadius: (model.isExpanded ? 22 : 10) * model.overlayScale,
             bottomCornerRadius: targetBottomRadius * model.overlayScale

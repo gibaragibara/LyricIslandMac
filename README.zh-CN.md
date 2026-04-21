@@ -4,6 +4,20 @@
 
 LyricIslandMac 是一个 macOS 菜单栏歌词应用，以类似 Dynamic Island 的悬浮窗形式展示同步歌词。应用外壳使用原生 `SwiftUI + AppKit`，歌词获取依赖本地 `.NET` helper 服务。
 
+## 效果预览
+
+### 紧凑模式
+
+![紧凑模式](screenshots/overlay-compact.png)
+
+### 刘海屏模式
+
+![刘海屏模式](screenshots/overlay-notch-screen.png)
+
+### 菜单与设置
+
+![菜单与设置](screenshots/menu-settings.png)
+
 ## 功能特性
 
 - 菜单栏应用，带刘海风格歌词悬浮窗
