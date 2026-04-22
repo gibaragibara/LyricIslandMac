@@ -95,6 +95,8 @@ final class AppModel: ObservableObject {
     private var started = false
     private var ticksSinceNetworkSync = 0
     private var lastLyricsTrackID: String?
+    private var lyricsFetchTrackIDInFlight: String?
+    private var isPlaybackRefreshInFlight = false
     private var overlayAllowedByUser = true
     private static let localTickIntervalSeconds: TimeInterval = 0.1
     private static let playbackNetworkSyncIntervalTicks: Int = 80
@@ -161,14 +163,17 @@ final class AppModel: ObservableObject {
     }
 
     func refreshPlayback() {
+        guard !isPlaybackRefreshInFlight else { return }
+        isPlaybackRefreshInFlight = true
+        ticksSinceNetworkSync = 0
         let client = spotifyClient
         Task { @MainActor in
+            defer { isPlaybackRefreshInFlight = false }
             do {
                 let token = try await ensureSpotifyAccessToken(forceRefresh: false)
                 let snapshot = try await client.currentPlayback(accessToken: token)
                 let trackChanged = playback.track.id != snapshot.track.id
                 playback = snapshot
-                statusText = "Spotify 播放状态已同步"
                 if trackChanged {
                     lyricsPayload = nil
                     currentLine = nil
@@ -178,7 +183,10 @@ final class AppModel: ObservableObject {
                 applyOverlayVisibilityPolicy()
                 refreshOverlayIfNeeded()
                 if trackChanged || lyricsPayload == nil {
+                    statusText = "Spotify 播放状态已同步，正在加载歌词"
                     fetchLyricsFromHelper(autoTriggered: true)
+                } else {
+                    statusText = "Spotify 播放状态已同步"
                 }
             } catch {
                 statusText = "Spotify 同步失败: \(error.localizedDescription)"
@@ -193,8 +201,17 @@ final class AppModel: ObservableObject {
         if autoTriggered, lastLyricsTrackID == track.id, lyricsPayload != nil {
             return
         }
+        if autoTriggered, lyricsFetchTrackIDInFlight == track.id {
+            return
+        }
 
         Task { @MainActor in
+            lyricsFetchTrackIDInFlight = track.id
+            defer {
+                if lyricsFetchTrackIDInFlight == track.id {
+                    lyricsFetchTrackIDInFlight = nil
+                }
+            }
             let client = DotnetLyricsServiceClient(executablePath: path)
             do {
                 let token = try? await ensureSpotifyAccessToken(forceRefresh: false)
@@ -210,9 +227,9 @@ final class AppModel: ObservableObject {
                 updateLyricCursor()
                 refreshOverlayIfNeeded()
             } catch {
-                if !autoTriggered {
-                    statusText = "歌词服务失败: \(error.localizedDescription)"
-                }
+                statusText = autoTriggered
+                    ? "Spotify 播放状态已同步，但歌词加载失败: \(error.localizedDescription)"
+                    : "歌词服务失败: \(error.localizedDescription)"
             }
         }
     }

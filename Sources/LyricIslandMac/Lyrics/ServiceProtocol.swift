@@ -16,6 +16,7 @@ enum LyricsServiceError: LocalizedError {
     case helperPathMissing
     case helperNotExecutable(String)
     case failedToLaunch(String)
+    case timedOut(TimeInterval)
     case badExit(status: Int32, stderr: String)
     case invalidResponse(String)
     case remoteError(String)
@@ -28,6 +29,8 @@ enum LyricsServiceError: LocalizedError {
             return "歌词服务路径不存在或不可执行: \(path)"
         case let .failedToLaunch(reason):
             return "启动歌词服务失败: \(reason)"
+        case let .timedOut(timeout):
+            return "歌词服务超时（\(Int(timeout.rounded())) 秒）。"
         case let .badExit(status, stderr):
             return "歌词服务异常退出（状态码 \(status)）。\(stderr)"
         case let .invalidResponse(raw):
