@@ -94,11 +94,14 @@ final class AppModel: ObservableObject {
     private var ticker: Timer?
     private var started = false
     private var ticksSinceNetworkSync = 0
+    private var playbackProgressAnchorMs = PlaybackSnapshot.demo.progressMs
+    private var playbackProgressAnchorDate = Date()
     private var lastLyricsTrackID: String?
     private var lyricsFetchTrackIDInFlight: String?
     private var isPlaybackRefreshInFlight = false
     private var overlayAllowedByUser = true
     private static let localTickIntervalSeconds: TimeInterval = 0.1
+    private static let localTickToleranceSeconds: TimeInterval = 0.02
     private static let playbackNetworkSyncIntervalTicks: Int = 80
 
     init(
@@ -141,11 +144,14 @@ final class AppModel: ObservableObject {
                 statusText = "请先填写 Spotify Client ID，并完成网页登录授权。"
             }
         }
-        ticker = Timer.scheduledTimer(withTimeInterval: Self.localTickIntervalSeconds, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.localTickIntervalSeconds, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.tick()
             }
         }
+        timer.tolerance = Self.localTickToleranceSeconds
+        RunLoop.main.add(timer, forMode: .common)
+        ticker = timer
     }
 
     func toggleOverlay() {
@@ -173,7 +179,7 @@ final class AppModel: ObservableObject {
                 let token = try await ensureSpotifyAccessToken(forceRefresh: false)
                 let snapshot = try await client.currentPlayback(accessToken: token)
                 let trackChanged = playback.track.id != snapshot.track.id
-                playback = snapshot
+                applyPlaybackSnapshot(snapshot)
                 if trackChanged {
                     lyricsPayload = nil
                     currentLine = nil
@@ -287,11 +293,7 @@ final class AppModel: ObservableObject {
     }
 
     private func tick() {
-        if playback.isPlaying {
-            let stepMs = Int(Self.localTickIntervalSeconds * 1_000)
-            let next = playback.progressMs + stepMs
-            playback.progressMs = min(playback.track.durationMs, next)
-        }
+        updateLocalPlaybackProgress()
         ticksSinceNetworkSync += 1
         if ticksSinceNetworkSync >= Self.playbackNetworkSyncIntervalTicks {
             ticksSinceNetworkSync = 0
@@ -299,6 +301,26 @@ final class AppModel: ObservableObject {
         }
         updateLyricCursor()
         refreshOverlayIfNeeded()
+    }
+
+    private func applyPlaybackSnapshot(_ snapshot: PlaybackSnapshot) {
+        playback = snapshot
+        playbackProgressAnchorMs = snapshot.progressMs
+        playbackProgressAnchorDate = Date()
+    }
+
+    private func updateLocalPlaybackProgress(now: Date = Date()) {
+        guard playback.isPlaying else {
+            playbackProgressAnchorMs = playback.progressMs
+            playbackProgressAnchorDate = now
+            return
+        }
+
+        let elapsedMs = Int(now.timeIntervalSince(playbackProgressAnchorDate) * 1_000)
+        let projectedProgress = min(playback.track.durationMs, max(0, playbackProgressAnchorMs + elapsedMs))
+        if playback.progressMs != projectedProgress {
+            playback.progressMs = projectedProgress
+        }
     }
 
     private func updateLyricCursor() {

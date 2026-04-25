@@ -26,7 +26,7 @@ enum OverlayDisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
-struct OverlayViewModel {
+struct OverlayViewModel: Equatable {
     var title: String
     var subtitle: String
     var artistArtworkURL: String?
@@ -50,9 +50,43 @@ struct OverlayViewModel {
     var safeAreaTop: CGFloat = 0
 }
 
+private extension OverlayViewModel {
+    static let placeholder = OverlayViewModel(
+        title: "歌词岛",
+        subtitle: "等待播放状态",
+        artistArtworkURL: nil,
+        currentLine: "暂无歌词",
+        currentSubline: nil,
+        compactPrimaryLine: "暂无歌词",
+        compactSecondaryLine: "等待播放状态",
+        artworkURL: nil,
+        currentProgress: 0,
+        nextLine: nil,
+        isPlaying: false
+    )
+}
+
+@MainActor
+private final class OverlayModelStore: ObservableObject {
+    @Published var model: OverlayViewModel
+
+    init(model: OverlayViewModel) {
+        self.model = model
+    }
+}
+
+private struct OverlayRootView: View {
+    @ObservedObject var store: OverlayModelStore
+
+    var body: some View {
+        OverlayPillView(model: store.model)
+    }
+}
+
 @MainActor
 final class OverlayPanelController {
     private var panel: NSPanel?
+    private let modelStore = OverlayModelStore(model: .placeholder)
     private var baseModel: OverlayViewModel?
     private var renderedModel: OverlayViewModel?
     private var displayMode: OverlayDisplayMode = .compact
@@ -70,7 +104,9 @@ final class OverlayPanelController {
         baseModel = model
         installMouseMonitorsIfNeeded()
         renderCurrentModel()
-        panel.orderFrontRegardless()
+        if !panel.isVisible {
+            panel.orderFrontRegardless()
+        }
     }
 
     func hide() {
@@ -161,8 +197,8 @@ final class OverlayPanelController {
         decorated.safeAreaTop = safeAreaTop
         renderedModel = decorated
 
-        if let host = panel.contentView as? NSHostingView<OverlayPillView> {
-            host.rootView = OverlayPillView(model: decorated)
+        if modelStore.model != decorated {
+            modelStore.model = decorated
         }
 
         let panelWidth = max(700.0 * scale, expandedWidth)
@@ -186,19 +222,7 @@ final class OverlayPanelController {
         panel.isMovable = false
         panel.ignoresMouseEvents = true
 
-        panel.contentView = NSHostingView(rootView: OverlayPillView(model: .init(
-            title: "歌词岛",
-            subtitle: "等待播放状态",
-            artistArtworkURL: nil,
-            currentLine: "暂无歌词",
-            currentSubline: nil,
-            compactPrimaryLine: "暂无歌词",
-            compactSecondaryLine: "等待播放状态",
-            artworkURL: nil,
-            currentProgress: 0,
-            nextLine: nil,
-            isPlaying: false
-        )))
+        panel.contentView = NSHostingView(rootView: OverlayRootView(store: modelStore))
         return panel
     }
 
@@ -208,7 +232,9 @@ final class OverlayPanelController {
         let height = expandedHeight
         let x = screen.frame.midX - width / 2
         let y = screen.frame.maxY - height
-        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        let nextFrame = NSRect(x: x, y: y, width: width, height: height)
+        guard !panel.frame.isApproximatelyEqual(to: nextFrame) else { return }
+        panel.setFrame(nextFrame, display: true)
     }
 
     private func resolveTargetScreen() -> NSScreen? {
@@ -311,5 +337,14 @@ extension NSScreen {
 private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
+    }
+}
+
+private extension NSRect {
+    func isApproximatelyEqual(to other: NSRect) -> Bool {
+        abs(origin.x - other.origin.x) < 0.5
+            && abs(origin.y - other.origin.y) < 0.5
+            && abs(size.width - other.size.width) < 0.5
+            && abs(size.height - other.size.height) < 0.5
     }
 }
