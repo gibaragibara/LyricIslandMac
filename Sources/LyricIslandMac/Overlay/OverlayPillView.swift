@@ -64,10 +64,17 @@ struct OverlayPillView: View {
                 .fill(Color.white.opacity(0.07))
                 .frame(height: 1)
 
-            KaraokeLineText(text: model.currentLine, progress: model.currentProgress, alignment: .center)
+            KaraokeLineText(
+                text: model.currentLine,
+                progress: model.currentProgress,
+                lyricLine: model.currentLyricLine,
+                playbackProgressAnchorMs: model.playbackProgressAnchorMs,
+                playbackProgressAnchorDate: model.playbackProgressAnchorDate,
+                isPlaying: model.isPlaying,
+                alignment: .center
+            )
                 .font(.system(size: scaled(15), weight: .semibold))
                 .lineLimit(1)
-                .animation(.linear(duration: 0.08), value: model.currentProgress)
 
             if let currentSubline = model.currentSubline, !currentSubline.isEmpty {
                 Text(currentSubline)
@@ -101,10 +108,17 @@ struct OverlayPillView: View {
         ZStack(alignment: .top) {
             // Text below the notch
             VStack(alignment: .center, spacing: 2) {
-                KaraokeLineText(text: model.compactPrimaryLine, progress: model.currentProgress, alignment: .center)
+                KaraokeLineText(
+                    text: model.compactPrimaryLine,
+                    progress: model.currentProgress,
+                    lyricLine: model.currentLyricLine,
+                    playbackProgressAnchorMs: model.playbackProgressAnchorMs,
+                    playbackProgressAnchorDate: model.playbackProgressAnchorDate,
+                    isPlaying: model.isPlaying,
+                    alignment: .center
+                )
                     .font(.system(size: scaled(16), weight: .semibold))
                     .lineLimit(1)
-                    .animation(.linear(duration: 0.08), value: model.currentProgress)
 
                 Text(model.compactSecondaryLine)
                     .font(.system(size: scaled(12), weight: .medium))
@@ -131,10 +145,17 @@ struct OverlayPillView: View {
             compactLeadingBadge
 
             VStack(alignment: .center, spacing: 2) {
-                KaraokeLineText(text: model.compactPrimaryLine, progress: model.currentProgress, alignment: .center)
+                KaraokeLineText(
+                    text: model.compactPrimaryLine,
+                    progress: model.currentProgress,
+                    lyricLine: model.currentLyricLine,
+                    playbackProgressAnchorMs: model.playbackProgressAnchorMs,
+                    playbackProgressAnchorDate: model.playbackProgressAnchorDate,
+                    isPlaying: model.isPlaying,
+                    alignment: .center
+                )
                     .font(.system(size: scaled(16), weight: .semibold))
                     .lineLimit(1)
-                    .animation(.linear(duration: 0.08), value: model.currentProgress)
 
                 Text(model.compactSecondaryLine)
                     .font(.system(size: scaled(12), weight: .medium))
@@ -225,24 +246,40 @@ private struct ArtistArtworkView: View {
 private struct KaraokeLineText: View {
     let text: String
     let progress: Double
+    let lyricLine: LyricLine?
+    let playbackProgressAnchorMs: Int
+    let playbackProgressAnchorDate: Date
+    let isPlaying: Bool
     var alignment: Alignment = .leading
 
     var body: some View {
-        let clampedProgress = min(1, max(0, progress))
-        ZStack(alignment: alignment) {
-            Text(text)
-                .foregroundStyle(Color.white.opacity(0.42))
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let clampedProgress = progress(at: context.date)
+            ZStack(alignment: alignment) {
+                Text(text)
+                    .foregroundStyle(Color.white.opacity(0.42))
 
-            Text(text)
-                .foregroundStyle(Color.white)
-                .mask(alignment: .leading) {
-                    GeometryReader { proxy in
-                        Rectangle()
-                            .frame(width: proxy.size.width * clampedProgress)
+                Text(text)
+                    .foregroundStyle(Color.white)
+                    .mask(alignment: .leading) {
+                        GeometryReader { proxy in
+                            Rectangle()
+                                .frame(width: proxy.size.width * clampedProgress)
+                        }
                     }
-                }
+            }
+            .frame(maxWidth: .infinity, alignment: alignment)
         }
-        .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private func progress(at date: Date) -> Double {
+        guard isPlaying, let lyricLine else {
+            return min(1, max(0, progress))
+        }
+
+        let elapsedMs = Int(date.timeIntervalSince(playbackProgressAnchorDate) * 1_000)
+        let projectedProgressMs = max(0, playbackProgressAnchorMs + elapsedMs)
+        return lyricLine.karaokeProgress(at: projectedProgressMs)
     }
 }
 

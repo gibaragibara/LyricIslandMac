@@ -36,6 +36,9 @@ struct OverlayViewModel: Equatable {
     var compactSecondaryLine: String
     var artworkURL: String?
     var currentProgress: Double
+    var currentLyricLine: LyricLine?
+    var playbackProgressAnchorMs: Int
+    var playbackProgressAnchorDate: Date
     var nextLine: String?
     var isPlaying: Bool
     var overlayOpacity: Double = 0.96
@@ -61,6 +64,9 @@ private extension OverlayViewModel {
         compactSecondaryLine: "等待播放状态",
         artworkURL: nil,
         currentProgress: 0,
+        currentLyricLine: nil,
+        playbackProgressAnchorMs: 0,
+        playbackProgressAnchorDate: Date(),
         nextLine: nil,
         isPlaying: false
     )

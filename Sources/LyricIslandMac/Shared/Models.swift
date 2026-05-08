@@ -32,6 +32,7 @@ struct PlaybackSnapshot: Equatable {
     var track: TrackInfo
     var progressMs: Int
     var isPlaying: Bool
+    var primaryArtistID: String? = nil
 
     static let demo = PlaybackSnapshot(
         track: TrackInfo(

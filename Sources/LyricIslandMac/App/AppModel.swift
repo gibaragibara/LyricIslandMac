@@ -98,8 +98,11 @@ final class AppModel: ObservableObject {
     private var playbackProgressAnchorDate = Date()
     private var lastLyricsTrackID: String?
     private var lyricsFetchTrackIDInFlight: String?
+    private var lyricsCache: [String: LyricsPayload] = [:]
+    private static let lyricsCacheMaxSize = 20
     private var isPlaybackRefreshInFlight = false
     private var overlayAllowedByUser = true
+    private var realtimeDisplayActivity: NSObjectProtocol?
     private static let localTickIntervalSeconds: TimeInterval = 0.1
     private static let localTickToleranceSeconds: TimeInterval = 0.02
     private static let playbackNetworkSyncIntervalTicks: Int = 80
@@ -181,22 +184,43 @@ final class AppModel: ObservableObject {
                 let trackChanged = playback.track.id != snapshot.track.id
                 applyPlaybackSnapshot(snapshot)
                 if trackChanged {
-                    lyricsPayload = nil
-                    currentLine = nil
-                    nextLine = nil
+                    if let cached = lyricsCache[snapshot.track.id] {
+                        lyricsPayload = cached
+                        lastLyricsTrackID = snapshot.track.id
+                        statusText = "歌词已从缓存加载（来源：\(cached.source.displayName)）"
+                    } else {
+                        lyricsPayload = nil
+                        currentLine = nil
+                        nextLine = nil
+                    }
                 }
                 updateLyricCursor()
                 applyOverlayVisibilityPolicy()
                 refreshOverlayIfNeeded()
                 if trackChanged || lyricsPayload == nil {
-                    statusText = "Spotify 播放状态已同步，正在加载歌词"
+                    if lyricsPayload == nil {
+                        statusText = "Spotify 播放状态已同步，正在加载歌词"
+                    }
                     fetchLyricsFromHelper(autoTriggered: true)
                 } else {
                     statusText = "Spotify 播放状态已同步"
                 }
+                if trackChanged, let artistID = snapshot.primaryArtistID {
+                    fetchArtistArtwork(token: token, artistID: artistID, trackID: snapshot.track.id)
+                }
             } catch {
                 statusText = "Spotify 同步失败: \(error.localizedDescription)"
             }
+        }
+    }
+
+    private func fetchArtistArtwork(token: String, artistID: String, trackID: String) {
+        let client = spotifyClient
+        Task { @MainActor in
+            let url = try? await client.fetchArtistArtworkURL(accessToken: token, artistID: artistID)
+            guard playback.track.id == trackID else { return }
+            playback.track.artistArtworkURL = url
+            refreshOverlayIfNeeded()
         }
     }
 
@@ -229,6 +253,10 @@ final class AppModel: ObservableObject {
                 )
                 lyricsPayload = payload
                 lastLyricsTrackID = track.id
+                if lyricsCache.count >= Self.lyricsCacheMaxSize {
+                    lyricsCache.removeAll()
+                }
+                lyricsCache[track.id] = payload
                 statusText = "歌词加载成功（来源：\(payload.source.displayName)）"
                 updateLyricCursor()
                 refreshOverlayIfNeeded()
@@ -345,6 +373,7 @@ final class AppModel: ObservableObject {
             if shouldShow {
                 overlayController.show(model: makeOverlayModel())
             }
+            updateRealtimeDisplayActivity()
             return
         }
 
@@ -354,6 +383,26 @@ final class AppModel: ObservableObject {
         } else {
             overlayController.hide()
         }
+        updateRealtimeDisplayActivity()
+    }
+
+    private func updateRealtimeDisplayActivity() {
+        let needsRealtimeUpdates = overlayVisible && playback.isPlaying
+        if needsRealtimeUpdates {
+            guard realtimeDisplayActivity == nil else { return }
+            realtimeDisplayActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical],
+                reason: "Keep karaoke lyric progress smooth while playback overlay is visible."
+            )
+        } else {
+            endRealtimeDisplayActivity()
+        }
+    }
+
+    private func endRealtimeDisplayActivity() {
+        guard let realtimeDisplayActivity else { return }
+        ProcessInfo.processInfo.endActivity(realtimeDisplayActivity)
+        self.realtimeDisplayActivity = nil
     }
 
     private func makeOverlayModel() -> OverlayViewModel {
@@ -371,6 +420,9 @@ final class AppModel: ObservableObject {
             compactSecondaryLine: compactSecondary,
             artworkURL: playback.track.artworkURL,
             currentProgress: progress,
+            currentLyricLine: currentLine,
+            playbackProgressAnchorMs: playbackProgressAnchorMs,
+            playbackProgressAnchorDate: playbackProgressAnchorDate,
             nextLine: nextLine?.text,
             isPlaying: playback.isPlaying,
             overlayOpacity: overlayOpacity,

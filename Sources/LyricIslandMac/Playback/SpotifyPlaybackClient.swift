@@ -2,6 +2,7 @@ import Foundation
 
 protocol SpotifyPlaybackClient: Sendable {
     func currentPlayback(accessToken: String) async throws -> PlaybackSnapshot
+    func fetchArtistArtworkURL(accessToken: String, artistID: String?) async throws -> String?
 }
 
 actor MockSpotifyPlaybackClient: SpotifyPlaybackClient {
@@ -19,6 +20,10 @@ actor MockSpotifyPlaybackClient: SpotifyPlaybackClient {
         let elapsedMs = Int(Date().timeIntervalSince(startDate) * 1000)
         let progress = max(0, elapsedMs % demoTrack.durationMs)
         return PlaybackSnapshot(track: demoTrack, progressMs: progress, isPlaying: true)
+    }
+
+    func fetchArtistArtworkURL(accessToken _: String, artistID _: String?) async throws -> String? {
+        nil
     }
 }
 
@@ -80,18 +85,15 @@ actor SpotifyWebPlaybackClient: SpotifyPlaybackClient {
                 artists: item.artists.map(\.name).joined(separator: ", "),
                 album: item.album.name,
                 durationMs: item.durationMs,
-                artistArtworkURL: try await fetchPrimaryArtistArtworkURL(
-                    accessToken: token,
-                    artistID: item.artists.first?.id
-                ),
                 artworkURL: item.album.preferredArtworkURL
             ),
             progressMs: payload.progressMs ?? 0,
-            isPlaying: payload.isPlaying
+            isPlaying: payload.isPlaying,
+            primaryArtistID: item.artists.first?.id
         )
     }
 
-    private func fetchPrimaryArtistArtworkURL(accessToken: String, artistID: String?) async throws -> String? {
+    func fetchArtistArtworkURL(accessToken: String, artistID: String?) async throws -> String? {
         guard let artistID, !artistID.isEmpty else {
             return nil
         }
