@@ -332,8 +332,12 @@ final class AppModel: ObservableObject {
     }
 
     private func applyPlaybackSnapshot(_ snapshot: PlaybackSnapshot) {
-        playback = snapshot
-        playbackProgressAnchorMs = snapshot.progressMs
+        var updated = snapshot
+        if updated.track.id == playback.track.id, updated.track.artistArtworkURL == nil {
+            updated.track.artistArtworkURL = playback.track.artistArtworkURL
+        }
+        playback = updated
+        playbackProgressAnchorMs = updated.progressMs
         playbackProgressAnchorDate = Date()
     }
 
@@ -349,6 +353,8 @@ final class AppModel: ObservableObject {
         if playback.progressMs != projectedProgress {
             playback.progressMs = projectedProgress
         }
+        playbackProgressAnchorMs = projectedProgress
+        playbackProgressAnchorDate = now
     }
 
     private func updateLyricCursor() {
