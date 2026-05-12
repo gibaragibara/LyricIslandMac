@@ -253,7 +253,7 @@ private struct KaraokeLineText: View {
     var alignment: Alignment = .leading
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
             let clampedProgress = progress(at: context.date)
             ZStack(alignment: alignment) {
                 Text(text)

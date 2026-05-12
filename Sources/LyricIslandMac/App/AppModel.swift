@@ -180,9 +180,14 @@ final class AppModel: ObservableObject {
             defer { isPlaybackRefreshInFlight = false }
             do {
                 let token = try await ensureSpotifyAccessToken(forceRefresh: false)
+                let requestStartedAt = Date()
                 let snapshot = try await client.currentPlayback(accessToken: token)
+                let responseReceivedAt = Date()
+                let snapshotEvaluatedAt = Date(
+                    timeIntervalSince1970: (requestStartedAt.timeIntervalSince1970 + responseReceivedAt.timeIntervalSince1970) / 2
+                )
                 let trackChanged = playback.track.id != snapshot.track.id
-                applyPlaybackSnapshot(snapshot)
+                applyPlaybackSnapshot(snapshot, evaluatedAt: snapshotEvaluatedAt)
                 if trackChanged {
                     if let cached = lyricsCache[snapshot.track.id] {
                         lyricsPayload = cached
@@ -336,14 +341,43 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func applyPlaybackSnapshot(_ snapshot: PlaybackSnapshot) {
+    private func applyPlaybackSnapshot(_ snapshot: PlaybackSnapshot, evaluatedAt: Date = Date()) {
         var updated = snapshot
         if updated.track.id == playback.track.id, updated.track.artistArtworkURL == nil {
             updated.track.artistArtworkURL = playback.track.artistArtworkURL
         }
+
+        let now = Date()
+        let trackChanged = playback.track.id != updated.track.id
+        let playStateChanged = playback.isPlaying != updated.isPlaying
+
+        let priorProjectedMs: Int
+        if !trackChanged, playback.isPlaying {
+            let elapsedMs = Int(now.timeIntervalSince(playbackProgressAnchorDate) * 1_000)
+            priorProjectedMs = max(0, playbackProgressAnchorMs + elapsedMs)
+        } else {
+            priorProjectedMs = playback.progressMs
+        }
+
+        let snapshotAgeMs = max(0, Int(now.timeIntervalSince(evaluatedAt) * 1_000))
+        let reportedNowMs = updated.isPlaying
+            ? min(updated.track.durationMs, max(0, updated.progressMs + snapshotAgeMs))
+            : updated.progressMs
+
+        let delta = trackChanged ? Int.max : abs(reportedNowMs - priorProjectedMs)
+        let shouldResetAnchor = trackChanged || playStateChanged || delta > 500
+
+        Self.klog("applySnapshot: track=\(updated.track.id) playing=\(updated.isPlaying) reported=\(updated.progressMs) snapshotAge=\(snapshotAgeMs)ms priorProjected=\(priorProjectedMs) reportedNow=\(reportedNowMs) delta=\(delta)ms resetAnchor=\(shouldResetAnchor)")
+
+        if shouldResetAnchor {
+            playbackProgressAnchorMs = updated.progressMs
+            playbackProgressAnchorDate = evaluatedAt
+            updated.progressMs = reportedNowMs
+        } else {
+            updated.progressMs = priorProjectedMs
+        }
+
         playback = updated
-        playbackProgressAnchorMs = updated.progressMs
-        playbackProgressAnchorDate = Date()
     }
 
     private func updateLocalPlaybackProgress(now: Date = Date()) {
@@ -358,6 +392,14 @@ final class AppModel: ObservableObject {
         if playback.progressMs != projectedProgress {
             playback.progressMs = projectedProgress
         }
+    }
+
+    private static let karaokeDebugEnabled = ProcessInfo.processInfo.environment["KARAOKE_DEBUG"] == "1"
+
+    fileprivate static func klog(_ message: @autoclosure () -> String) {
+        guard karaokeDebugEnabled else { return }
+        let t = Date().timeIntervalSinceReferenceDate
+        print("[karaoke \(String(format: "%.3f", t))] \(message())")
     }
 
     @discardableResult
@@ -376,6 +418,10 @@ final class AppModel: ObservableObject {
         let pair = lines.linePair(at: playback.progressMs)
         let changed = currentLine != pair.current || nextLine != pair.next
         guard changed else { return false }
+        let oldText = currentLine?.text ?? "nil"
+        let newText = pair.current?.text ?? "nil"
+        let lineStart = pair.current?.startTimeMs ?? -1
+        Self.klog("cursorChange: at=\(playback.progressMs)ms lineStart=\(lineStart) lateness=\(playback.progressMs - lineStart)ms old=\"\(oldText.prefix(20))\" -> new=\"\(newText.prefix(20))\"")
         currentLine = pair.current
         nextLine = pair.next
         return true
