@@ -74,12 +74,14 @@ extension Array where Element == LyricLine {
             return (nil, nil)
         }
 
-        let ordered = sorted { $0.startTimeMs < $1.startTimeMs }
+        let ordered = orderedByStartTime()
         var current: LyricLine?
         var next: LyricLine?
 
         for (index, line) in ordered.enumerated() {
-            let lineEnd = line.endTimeMs ?? Int.max
+            let explicitEnd = line.endTimeMs ?? Int.max
+            let nextStart = index + 1 < ordered.count ? ordered[index + 1].startTimeMs : Int.max
+            let lineEnd = Swift.min(explicitEnd, nextStart)
             if progressMs >= line.startTimeMs && progressMs < lineEnd {
                 current = line
                 next = index + 1 < ordered.count ? ordered[index + 1] : nil
@@ -97,6 +99,15 @@ extension Array where Element == LyricLine {
         }
 
         return (current, next)
+    }
+
+    private func orderedByStartTime() -> [LyricLine] {
+        guard count > 1 else { return self }
+
+        for index in indices.dropFirst() where self[index - 1].startTimeMs > self[index].startTimeMs {
+            return sorted { $0.startTimeMs < $1.startTimeMs }
+        }
+        return self
     }
 }
 

@@ -186,6 +186,8 @@ final class AppModel: ObservableObject {
                 if trackChanged {
                     if let cached = lyricsCache[snapshot.track.id] {
                         lyricsPayload = cached
+                        currentLine = nil
+                        nextLine = nil
                         lastLyricsTrackID = snapshot.track.id
                         statusText = "歌词已从缓存加载（来源：\(cached.source.displayName)）"
                     } else {
@@ -252,6 +254,8 @@ final class AppModel: ObservableObject {
                     spotifySpDc: spotifySpDc
                 )
                 lyricsPayload = payload
+                currentLine = nil
+                nextLine = nil
                 lastLyricsTrackID = track.id
                 if lyricsCache.count >= Self.lyricsCacheMaxSize {
                     lyricsCache.removeAll()
@@ -327,8 +331,9 @@ final class AppModel: ObservableObject {
             ticksSinceNetworkSync = 0
             refreshPlayback()
         }
-        updateLyricCursor()
-        refreshOverlayIfNeeded()
+        if updateLyricCursor() {
+            refreshOverlayIfNeeded()
+        }
     }
 
     private func applyPlaybackSnapshot(_ snapshot: PlaybackSnapshot) {
@@ -357,15 +362,40 @@ final class AppModel: ObservableObject {
         playbackProgressAnchorDate = now
     }
 
-    private func updateLyricCursor() {
+    @discardableResult
+    private func updateLyricCursor() -> Bool {
         guard let lines = lyricsPayload?.lines else {
+            let changed = currentLine != nil || nextLine != nil
             currentLine = nil
             nextLine = nil
-            return
+            return changed
         }
+
+        if isPlaybackStillInsideCurrentLyricCursor {
+            return false
+        }
+
         let pair = lines.linePair(at: playback.progressMs)
+        let changed = currentLine != pair.current || nextLine != pair.next
+        guard changed else { return false }
         currentLine = pair.current
         nextLine = pair.next
+        return true
+    }
+
+    private var isPlaybackStillInsideCurrentLyricCursor: Bool {
+        if let currentLine {
+            let explicitEnd = currentLine.endTimeMs ?? Int.max
+            let nextStart = nextLine?.startTimeMs ?? Int.max
+            let effectiveEnd = min(explicitEnd, nextStart)
+            return playback.progressMs >= currentLine.startTimeMs && playback.progressMs < effectiveEnd
+        }
+
+        if let nextLine {
+            return playback.progressMs < nextLine.startTimeMs
+        }
+
+        return false
     }
 
     private func refreshOverlayIfNeeded() {
