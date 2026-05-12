@@ -358,8 +358,6 @@ final class AppModel: ObservableObject {
         if playback.progressMs != projectedProgress {
             playback.progressMs = projectedProgress
         }
-        playbackProgressAnchorMs = projectedProgress
-        playbackProgressAnchorDate = now
     }
 
     @discardableResult

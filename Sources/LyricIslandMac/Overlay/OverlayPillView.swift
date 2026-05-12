@@ -262,10 +262,8 @@ private struct KaraokeLineText: View {
                 Text(text)
                     .foregroundStyle(Color.white)
                     .mask(alignment: .leading) {
-                        GeometryReader { proxy in
-                            Rectangle()
-                                .frame(width: proxy.size.width * clampedProgress)
-                        }
+                        Rectangle()
+                            .scaleEffect(x: clampedProgress, y: 1, anchor: .leading)
                     }
             }
             .frame(maxWidth: .infinity, alignment: alignment)
