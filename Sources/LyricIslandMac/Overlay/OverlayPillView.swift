@@ -1,3 +1,5 @@
+import AppKit
+import QuartzCore
 import SwiftUI
 
 struct OverlayPillView: View {
@@ -71,10 +73,9 @@ struct OverlayPillView: View {
                 playbackProgressAnchorMs: model.playbackProgressAnchorMs,
                 playbackProgressAnchorDate: model.playbackProgressAnchorDate,
                 isPlaying: model.isPlaying,
+                font: .systemFont(ofSize: scaled(15), weight: .semibold),
                 alignment: .center
             )
-                .font(.system(size: scaled(15), weight: .semibold))
-                .lineLimit(1)
 
             if let currentSubline = model.currentSubline, !currentSubline.isEmpty {
                 Text(currentSubline)
@@ -115,10 +116,9 @@ struct OverlayPillView: View {
                     playbackProgressAnchorMs: model.playbackProgressAnchorMs,
                     playbackProgressAnchorDate: model.playbackProgressAnchorDate,
                     isPlaying: model.isPlaying,
+                    font: .systemFont(ofSize: scaled(16), weight: .semibold),
                     alignment: .center
                 )
-                    .font(.system(size: scaled(16), weight: .semibold))
-                    .lineLimit(1)
 
                 Text(model.compactSecondaryLine)
                     .font(.system(size: scaled(12), weight: .medium))
@@ -152,10 +152,9 @@ struct OverlayPillView: View {
                     playbackProgressAnchorMs: model.playbackProgressAnchorMs,
                     playbackProgressAnchorDate: model.playbackProgressAnchorDate,
                     isPlaying: model.isPlaying,
+                    font: .systemFont(ofSize: scaled(16), weight: .semibold),
                     alignment: .center
                 )
-                    .font(.system(size: scaled(16), weight: .semibold))
-                    .lineLimit(1)
 
                 Text(model.compactSecondaryLine)
                     .font(.system(size: scaled(12), weight: .medium))
@@ -250,34 +249,266 @@ private struct KaraokeLineText: View {
     let playbackProgressAnchorMs: Int
     let playbackProgressAnchorDate: Date
     let isPlaying: Bool
-    var alignment: Alignment = .leading
+    let font: NSFont
+    var alignment: NSTextAlignment = .center
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
-            let clampedProgress = progress(at: context.date)
-            ZStack(alignment: alignment) {
-                Text(text)
-                    .foregroundStyle(Color.white.opacity(0.42))
+        KaraokeLineRepresentable(
+            text: text,
+            font: font,
+            alignment: alignment,
+            staticProgress: progress,
+            lyricLine: lyricLine,
+            anchorMs: playbackProgressAnchorMs,
+            anchorDate: playbackProgressAnchorDate,
+            isPlaying: isPlaying
+        )
+        .frame(maxWidth: .infinity)
+    }
+}
 
-                Text(text)
-                    .foregroundStyle(Color.white)
-                    .mask(alignment: .leading) {
-                        Rectangle()
-                            .scaleEffect(x: clampedProgress, y: 1, anchor: .leading)
-                    }
-            }
-            .frame(maxWidth: .infinity, alignment: alignment)
+private struct KaraokeLineRepresentable: NSViewRepresentable {
+    let text: String
+    let font: NSFont
+    let alignment: NSTextAlignment
+    let staticProgress: Double
+    let lyricLine: LyricLine?
+    let anchorMs: Int
+    let anchorDate: Date
+    let isPlaying: Bool
+
+    func makeNSView(context: Context) -> KaraokeNSView {
+        let view = KaraokeNSView()
+        view.apply(
+            text: text,
+            font: font,
+            alignment: alignment,
+            staticProgress: staticProgress,
+            lyricLine: lyricLine,
+            anchorMs: anchorMs,
+            anchorDate: anchorDate,
+            isPlaying: isPlaying
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: KaraokeNSView, context: Context) {
+        nsView.apply(
+            text: text,
+            font: font,
+            alignment: alignment,
+            staticProgress: staticProgress,
+            lyricLine: lyricLine,
+            anchorMs: anchorMs,
+            anchorDate: anchorDate,
+            isPlaying: isPlaying
+        )
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: KaraokeNSView, context: Context) -> CGSize? {
+        let intrinsic = nsView.intrinsicContentSize
+        let width = proposal.width.map { min($0, intrinsic.width) } ?? intrinsic.width
+        return CGSize(width: width, height: intrinsic.height)
+    }
+}
+
+private final class KaraokeNSView: NSView {
+    private let baseTextLayer = CATextLayer()
+    private let highlightTextLayer = CATextLayer()
+    private let maskLayer = CALayer()
+    nonisolated(unsafe) private var displayLink: CADisplayLink?
+
+    private var currentText: String = ""
+    private var currentFont: NSFont?
+    private var currentAlignment: NSTextAlignment = .center
+    private var lyricLine: LyricLine?
+    private var anchorMs: Int = 0
+    private var anchorDate: Date = Date()
+    private var isPlaying: Bool = false
+    private var staticProgress: Double = 0
+    private var lastAppliedProgress: Double = -1
+
+    private static let noImplicit: [String: CAAction] = [
+        "bounds": NSNull(),
+        "position": NSNull(),
+        "contents": NSNull(),
+        "frame": NSNull(),
+        "string": NSNull(),
+        "foregroundColor": NSNull(),
+        "hidden": NSNull(),
+        "transform": NSNull()
+    ]
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    deinit {
+        displayLink?.invalidate()
+    }
+
+    private func commonInit() {
+        wantsLayer = true
+        layer?.actions = Self.noImplicit
+        layer?.masksToBounds = false
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+
+        baseTextLayer.contentsScale = scale
+        baseTextLayer.actions = Self.noImplicit
+        baseTextLayer.foregroundColor = NSColor.white.withAlphaComponent(0.42).cgColor
+        baseTextLayer.alignmentMode = .center
+        baseTextLayer.truncationMode = .none
+        baseTextLayer.isWrapped = false
+        layer?.addSublayer(baseTextLayer)
+
+        highlightTextLayer.contentsScale = scale
+        highlightTextLayer.actions = Self.noImplicit
+        highlightTextLayer.foregroundColor = NSColor.white.cgColor
+        highlightTextLayer.alignmentMode = .center
+        highlightTextLayer.truncationMode = .none
+        highlightTextLayer.isWrapped = false
+        layer?.addSublayer(highlightTextLayer)
+
+        maskLayer.anchorPoint = .zero
+        maskLayer.backgroundColor = NSColor.black.cgColor
+        maskLayer.actions = Self.noImplicit
+        highlightTextLayer.mask = maskLayer
+    }
+
+    override var intrinsicContentSize: NSSize {
+        guard !currentText.isEmpty, let font = currentFont else {
+            return NSSize(width: NSView.noIntrinsicMetric, height: ceil(currentFont?.boundingRectForFont.height ?? 0))
+        }
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let size = (currentText as NSString).size(withAttributes: attrs)
+        return NSSize(width: ceil(size.width), height: ceil(size.height))
+    }
+
+    override func layout() {
+        super.layout()
+        let bounds = self.bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        baseTextLayer.frame = bounds
+        highlightTextLayer.frame = bounds
+        applyProgress(force: true)
+        CATransaction.commit()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let screen = window?.screen {
+            let scale = screen.backingScaleFactor
+            baseTextLayer.contentsScale = scale
+            highlightTextLayer.contentsScale = scale
+        }
+        if window != nil {
+            startDisplayLinkIfNeeded()
+        } else {
+            stopDisplayLink()
         }
     }
 
-    private func progress(at date: Date) -> Double {
-        guard isPlaying, let lyricLine else {
-            return min(1, max(0, progress))
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            stopDisplayLink()
+        }
+    }
+
+    func apply(text: String, font: NSFont, alignment: NSTextAlignment, staticProgress: Double, lyricLine: LyricLine?, anchorMs: Int, anchorDate: Date, isPlaying: Bool) {
+        var sizeInvalidated = false
+        if currentText != text {
+            currentText = text
+            baseTextLayer.string = text
+            highlightTextLayer.string = text
+            sizeInvalidated = true
+        }
+        if currentFont != font {
+            currentFont = font
+            let ctFont = font as CTFont
+            baseTextLayer.font = ctFont
+            baseTextLayer.fontSize = font.pointSize
+            highlightTextLayer.font = ctFont
+            highlightTextLayer.fontSize = font.pointSize
+            sizeInvalidated = true
+        }
+        if currentAlignment != alignment {
+            currentAlignment = alignment
+            let mode: CATextLayerAlignmentMode
+            switch alignment {
+            case .center: mode = .center
+            case .right: mode = .right
+            case .justified: mode = .justified
+            case .natural: mode = .natural
+            default: mode = .left
+            }
+            baseTextLayer.alignmentMode = mode
+            highlightTextLayer.alignmentMode = mode
+        }
+        if sizeInvalidated {
+            invalidateIntrinsicContentSize()
         }
 
-        let elapsedMs = Int(date.timeIntervalSince(playbackProgressAnchorDate) * 1_000)
-        let projectedProgressMs = max(0, playbackProgressAnchorMs + elapsedMs)
-        return lyricLine.karaokeProgress(at: projectedProgressMs)
+        self.lyricLine = lyricLine
+        self.anchorMs = anchorMs
+        self.anchorDate = anchorDate
+        self.isPlaying = isPlaying
+        self.staticProgress = staticProgress
+        lastAppliedProgress = -1
+        applyProgress(force: true)
+
+        if window != nil {
+            startDisplayLinkIfNeeded()
+        }
+    }
+
+    private func currentProgress() -> Double {
+        guard isPlaying, let line = lyricLine else {
+            return min(1, max(0, staticProgress))
+        }
+        let elapsedSec = Date().timeIntervalSince(anchorDate)
+        let projectedMs = anchorMs + Int(elapsedSec * 1000)
+        return min(1, max(0, line.karaokeProgress(at: projectedMs)))
+    }
+
+    private func applyProgress(force: Bool = false) {
+        let p = currentProgress()
+        if !force, abs(p - lastAppliedProgress) < 0.0005 { return }
+        lastAppliedProgress = p
+        let bounds = highlightTextLayer.bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        maskLayer.frame = CGRect(x: 0, y: 0, width: bounds.width * CGFloat(p), height: bounds.height)
+        CATransaction.commit()
+    }
+
+    private func startDisplayLinkIfNeeded() {
+        guard displayLink == nil, isPlaying, lyricLine != nil else {
+            if !(isPlaying && lyricLine != nil) { stopDisplayLink() }
+            return
+        }
+        let link = self.displayLink(target: self, selector: #selector(displayLinkFired))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    private func stopDisplayLink() {
+        displayLink?.invalidate()
+        displayLink = nil
+    }
+
+    @objc private func displayLinkFired() {
+        applyProgress()
     }
 }
 
