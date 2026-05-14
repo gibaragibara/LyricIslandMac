@@ -96,6 +96,7 @@ final class AppModel: ObservableObject {
     private var ticksSinceNetworkSync = 0
     private var playbackProgressAnchorMs = PlaybackSnapshot.demo.progressMs
     private var playbackProgressAnchorDate = Date()
+    private var currentPlaybackProgressMs: Int = PlaybackSnapshot.demo.progressMs
     private var lastLyricsTrackID: String?
     private var lyricsFetchTrackIDInFlight: String?
     private var lyricsCache: [String: LyricsPayload] = [:]
@@ -376,6 +377,7 @@ final class AppModel: ObservableObject {
         } else {
             updated.progressMs = priorProjectedMs
         }
+        currentPlaybackProgressMs = updated.progressMs
 
         playback = updated
     }
@@ -384,12 +386,16 @@ final class AppModel: ObservableObject {
         guard playback.isPlaying else {
             playbackProgressAnchorMs = playback.progressMs
             playbackProgressAnchorDate = now
+            currentPlaybackProgressMs = playback.progressMs
             return
         }
 
         let elapsedMs = Int(now.timeIntervalSince(playbackProgressAnchorDate) * 1_000)
         let projectedProgress = min(playback.track.durationMs, max(0, playbackProgressAnchorMs + elapsedMs))
-        if playback.progressMs != projectedProgress {
+        currentPlaybackProgressMs = projectedProgress
+        // Throttle the @Published mutation: only update playback.progressMs when the
+        // visible second changes, so we don't trigger SwiftUI Observation churn 10x/sec.
+        if playback.progressMs / 1000 != projectedProgress / 1000 {
             playback.progressMs = projectedProgress
         }
     }
@@ -415,13 +421,13 @@ final class AppModel: ObservableObject {
             return false
         }
 
-        let pair = lines.linePair(at: playback.progressMs)
+        let pair = lines.linePair(at: currentPlaybackProgressMs)
         let changed = currentLine != pair.current || nextLine != pair.next
         guard changed else { return false }
         let oldText = currentLine?.text ?? "nil"
         let newText = pair.current?.text ?? "nil"
         let lineStart = pair.current?.startTimeMs ?? -1
-        Self.klog("cursorChange: at=\(playback.progressMs)ms lineStart=\(lineStart) lateness=\(playback.progressMs - lineStart)ms old=\"\(oldText.prefix(20))\" -> new=\"\(newText.prefix(20))\"")
+        Self.klog("cursorChange: at=\(currentPlaybackProgressMs)ms lineStart=\(lineStart) lateness=\(currentPlaybackProgressMs - lineStart)ms old=\"\(oldText.prefix(20))\" -> new=\"\(newText.prefix(20))\"")
         currentLine = pair.current
         nextLine = pair.next
         return true
@@ -432,11 +438,11 @@ final class AppModel: ObservableObject {
             let explicitEnd = currentLine.endTimeMs ?? Int.max
             let nextStart = nextLine?.startTimeMs ?? Int.max
             let effectiveEnd = min(explicitEnd, nextStart)
-            return playback.progressMs >= currentLine.startTimeMs && playback.progressMs < effectiveEnd
+            return currentPlaybackProgressMs >= currentLine.startTimeMs && currentPlaybackProgressMs < effectiveEnd
         }
 
         if let nextLine {
-            return playback.progressMs < nextLine.startTimeMs
+            return currentPlaybackProgressMs < nextLine.startTimeMs
         }
 
         return false
@@ -487,7 +493,7 @@ final class AppModel: ObservableObject {
 
     private func makeOverlayModel() -> OverlayViewModel {
         let subline = currentLine?.subtext?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let progress = currentLine?.karaokeProgress(at: playback.progressMs) ?? 0
+        let progress = currentLine?.karaokeProgress(at: currentPlaybackProgressMs) ?? 0
         let compactPrimary = currentLine?.text.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? playback.track.title
         let compactSecondary = subline?.nonEmpty ?? playback.track.artists
         return OverlayViewModel(
