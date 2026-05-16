@@ -56,6 +56,17 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("歌词源") {
+                Picker("歌词源", selection: $model.preferredChineseLyricsSource) {
+                    Text("QQ 音乐").tag(LyricsSource.qqMusic)
+                    Text("网易云").tag(LyricsSource.netease)
+                }
+                .pickerStyle(.segmented)
+                Text("Spotify 歌词始终作为备选来源。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("歌词服务") {
                 Text("歌词服务可执行路径")
                     .font(.headline)
@@ -90,7 +101,7 @@ struct SettingsView: View {
 
             Section("范围") {
                 Text("播放源：Spotify")
-                Text("歌词源：Spotify / QQ 音乐 / 网易云")
+                Text("歌词源：Spotify + \(model.preferredChineseLyricsSource.displayName)")
             }
         }
         .padding(16)

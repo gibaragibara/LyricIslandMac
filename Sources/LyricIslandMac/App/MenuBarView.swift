@@ -39,6 +39,20 @@ struct MenuBarView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
+                Text("歌词源")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("歌词源", selection: $model.preferredChineseLyricsSource) {
+                    Text("QQ 音乐").tag(LyricsSource.qqMusic)
+                    Text("网易云").tag(LyricsSource.netease)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
                 Button(expandTokenEditor ? "收起 Spotify 凭据输入" : "填写 Spotify 凭据") {
                     expandTokenEditor.toggle()
                 }

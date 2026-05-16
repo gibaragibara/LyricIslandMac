@@ -13,6 +13,7 @@ final class AppModel: ObservableObject {
     private static let overlayScaleKey = "settings.overlayScale"
     private static let overlayDisplayModeKey = "settings.overlayDisplayMode"
     private static let overlayScreenIDKey = "settings.overlayScreenID"
+    private static let preferredChineseLyricsSourceKey = "settings.preferredChineseLyricsSource"
 
     @Published var playback: PlaybackSnapshot = .demo
     @Published var lyricsPayload: LyricsPayload?
@@ -86,7 +87,22 @@ final class AppModel: ObservableObject {
             refreshOverlayIfNeeded()
         }
     }
-    let selectedSources: [LyricsSource] = [.spotify, .qqMusic, .netease]
+    @Published var preferredChineseLyricsSource: LyricsSource {
+        didSet {
+            UserDefaults.standard.set(preferredChineseLyricsSource.rawValue, forKey: Self.preferredChineseLyricsSourceKey)
+            lyricsCache.removeAll()
+            lyricsPayload = nil
+            currentLine = nil
+            nextLine = nil
+            lastLyricsTrackID = nil
+            refreshOverlayIfNeeded()
+            fetchLyricsFromHelper(autoTriggered: false)
+        }
+    }
+
+    var selectedSources: [LyricsSource] {
+        [.spotify, preferredChineseLyricsSource]
+    }
 
     private let overlayController = OverlayPanelController()
     private let spotifyClient: SpotifyPlaybackClient
@@ -128,6 +144,8 @@ final class AppModel: ObservableObject {
         let savedDisplayMode = UserDefaults.standard.string(forKey: Self.overlayDisplayModeKey)
         self.overlayDisplayMode = OverlayDisplayMode(rawValue: savedDisplayMode ?? "") ?? .compact
         self.overlayScreenID = UserDefaults.standard.string(forKey: Self.overlayScreenIDKey) ?? ""
+        let savedChineseSource = UserDefaults.standard.string(forKey: Self.preferredChineseLyricsSourceKey)
+        self.preferredChineseLyricsSource = LyricsSource(rawValue: savedChineseSource ?? "") ?? .qqMusic
         overlayController.setDisplayMode(overlayDisplayMode)
         overlayController.setPreferredScreenID(overlayScreenID)
     }
