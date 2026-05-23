@@ -459,13 +459,16 @@ private final class KaraokeNSView: NSView {
             invalidateIntrinsicContentSize()
         }
 
+        let lineChanged = self.lyricLine != lyricLine
         self.lyricLine = lyricLine
         self.anchorMs = anchorMs
         self.anchorDate = anchorDate
         self.isPlaying = isPlaying
         self.staticProgress = staticProgress
-        lastAppliedProgress = -1
-        applyProgress(force: true)
+        if lineChanged || sizeInvalidated {
+            lastAppliedProgress = -1
+            applyProgress(force: true)
+        }
 
         if window != nil {
             startDisplayLinkIfNeeded()

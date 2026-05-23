@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     private static let overlayDisplayModeKey = "settings.overlayDisplayMode"
     private static let overlayScreenIDKey = "settings.overlayScreenID"
     private static let preferredChineseLyricsSourceKey = "settings.preferredChineseLyricsSource"
+    private static let lyricsOffsetMsKey = "settings.lyricsOffsetMs"
 
     @Published var playback: PlaybackSnapshot = .demo
     @Published var lyricsPayload: LyricsPayload?
@@ -87,6 +88,17 @@ final class AppModel: ObservableObject {
             refreshOverlayIfNeeded()
         }
     }
+    @Published var lyricsOffsetMs: Double {
+        didSet {
+            let clamped = min(max(lyricsOffsetMs, -2000), 2000).rounded()
+            if clamped != lyricsOffsetMs {
+                lyricsOffsetMs = clamped
+                return
+            }
+            UserDefaults.standard.set(lyricsOffsetMs, forKey: Self.lyricsOffsetMsKey)
+            refreshOverlayIfNeeded()
+        }
+    }
     @Published var preferredChineseLyricsSource: LyricsSource {
         didSet {
             UserDefaults.standard.set(preferredChineseLyricsSource.rawValue, forKey: Self.preferredChineseLyricsSourceKey)
@@ -100,8 +112,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var selectedSources: [LyricsSource] {
-        [.spotify, preferredChineseLyricsSource]
+    var chineseLyricsFallbackChain: [LyricsSource] {
+        switch preferredChineseLyricsSource {
+        case .netease: return [.netease, .qqMusic]
+        case .qqMusic: return [.qqMusic, .netease]
+        default: return [.netease, .qqMusic]
+        }
     }
 
     private let overlayController = OverlayPanelController()
@@ -113,6 +129,9 @@ final class AppModel: ObservableObject {
     private var playbackProgressAnchorMs = PlaybackSnapshot.demo.progressMs
     private var playbackProgressAnchorDate = Date()
     private var currentPlaybackProgressMs: Int = PlaybackSnapshot.demo.progressMs
+    private var lyricsProgressMs: Int {
+        max(0, currentPlaybackProgressMs + Int(lyricsOffsetMs))
+    }
     private var lastLyricsTrackID: String?
     private var lyricsFetchTrackIDInFlight: String?
     private var lyricsCache: [String: LyricsPayload] = [:]
@@ -144,8 +163,10 @@ final class AppModel: ObservableObject {
         let savedDisplayMode = UserDefaults.standard.string(forKey: Self.overlayDisplayModeKey)
         self.overlayDisplayMode = OverlayDisplayMode(rawValue: savedDisplayMode ?? "") ?? .compact
         self.overlayScreenID = UserDefaults.standard.string(forKey: Self.overlayScreenIDKey) ?? ""
+        let savedOffset = UserDefaults.standard.object(forKey: Self.lyricsOffsetMsKey) as? Double
+        self.lyricsOffsetMs = min(max(savedOffset ?? 0, -2000), 2000).rounded()
         let savedChineseSource = UserDefaults.standard.string(forKey: Self.preferredChineseLyricsSourceKey)
-        self.preferredChineseLyricsSource = LyricsSource(rawValue: savedChineseSource ?? "") ?? .qqMusic
+        self.preferredChineseLyricsSource = LyricsSource(rawValue: savedChineseSource ?? "") ?? .netease
         overlayController.setDisplayMode(overlayDisplayMode)
         overlayController.setPreferredScreenID(overlayScreenID)
     }
@@ -252,7 +273,6 @@ final class AppModel: ObservableObject {
 
     func fetchLyricsFromHelper(autoTriggered: Bool = false) {
         let path = helperExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sources = selectedSources
         let track = playback.track
         if autoTriggered, lastLyricsTrackID == track.id, lyricsPayload != nil {
             return
@@ -269,14 +289,32 @@ final class AppModel: ObservableObject {
                 }
             }
             let client = DotnetLyricsServiceClient(executablePath: path)
-            do {
-                let token = try? await ensureSpotifyAccessToken(forceRefresh: false)
-                let payload = try await client.fetchLyrics(
-                    for: track,
-                    sources: sources,
-                    spotifyAccessToken: token,
-                    spotifySpDc: spotifySpDc
-                )
+            let token = try? await ensureSpotifyAccessToken(forceRefresh: false)
+
+            var bestPayload: LyricsPayload?
+            var lastError: Error?
+
+            for chineseSource in chineseLyricsFallbackChain {
+                do {
+                    let payload = try await client.fetchLyrics(
+                        for: track,
+                        sources: [.spotify, chineseSource],
+                        spotifyAccessToken: token,
+                        spotifySpDc: spotifySpDc
+                    )
+                    if payload.source == chineseSource && !payload.lines.isEmpty {
+                        bestPayload = payload
+                        break
+                    }
+                    if bestPayload == nil && !payload.lines.isEmpty {
+                        bestPayload = payload
+                    }
+                } catch {
+                    lastError = error
+                }
+            }
+
+            if let payload = bestPayload {
                 lyricsPayload = payload
                 currentLine = nil
                 nextLine = nil
@@ -288,10 +326,12 @@ final class AppModel: ObservableObject {
                 statusText = "歌词加载成功（来源：\(payload.source.displayName)）"
                 updateLyricCursor()
                 refreshOverlayIfNeeded()
-            } catch {
+            } else if let error = lastError {
                 statusText = autoTriggered
                     ? "Spotify 播放状态已同步，但歌词加载失败: \(error.localizedDescription)"
                     : "歌词服务失败: \(error.localizedDescription)"
+            } else {
+                statusText = "未找到可用歌词"
             }
         }
     }
@@ -439,13 +479,13 @@ final class AppModel: ObservableObject {
             return false
         }
 
-        let pair = lines.linePair(at: currentPlaybackProgressMs)
+        let pair = lines.linePair(at: lyricsProgressMs)
         let changed = currentLine != pair.current || nextLine != pair.next
         guard changed else { return false }
         let oldText = currentLine?.text ?? "nil"
         let newText = pair.current?.text ?? "nil"
         let lineStart = pair.current?.startTimeMs ?? -1
-        Self.klog("cursorChange: at=\(currentPlaybackProgressMs)ms lineStart=\(lineStart) lateness=\(currentPlaybackProgressMs - lineStart)ms old=\"\(oldText.prefix(20))\" -> new=\"\(newText.prefix(20))\"")
+        Self.klog("cursorChange: at=\(lyricsProgressMs)ms lineStart=\(lineStart) lateness=\(lyricsProgressMs - lineStart)ms old=\"\(oldText.prefix(20))\" -> new=\"\(newText.prefix(20))\"")
         currentLine = pair.current
         nextLine = pair.next
         return true
@@ -456,11 +496,11 @@ final class AppModel: ObservableObject {
             let explicitEnd = currentLine.endTimeMs ?? Int.max
             let nextStart = nextLine?.startTimeMs ?? Int.max
             let effectiveEnd = min(explicitEnd, nextStart)
-            return currentPlaybackProgressMs >= currentLine.startTimeMs && currentPlaybackProgressMs < effectiveEnd
+            return lyricsProgressMs >= currentLine.startTimeMs && lyricsProgressMs < effectiveEnd
         }
 
         if let nextLine {
-            return currentPlaybackProgressMs < nextLine.startTimeMs
+            return lyricsProgressMs < nextLine.startTimeMs
         }
 
         return false
@@ -474,9 +514,6 @@ final class AppModel: ObservableObject {
     private func applyOverlayVisibilityPolicy() {
         let shouldShow = overlayAllowedByUser && playback.isPlaying
         guard shouldShow != overlayVisible else {
-            if shouldShow {
-                overlayController.show(model: makeOverlayModel())
-            }
             updateRealtimeDisplayActivity()
             return
         }
@@ -511,7 +548,7 @@ final class AppModel: ObservableObject {
 
     private func makeOverlayModel() -> OverlayViewModel {
         let subline = currentLine?.subtext?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let progress = currentLine?.karaokeProgress(at: currentPlaybackProgressMs) ?? 0
+        let progress = currentLine?.karaokeProgress(at: lyricsProgressMs) ?? 0
         let compactPrimary = currentLine?.text.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? playback.track.title
         let compactSecondary = subline?.nonEmpty ?? playback.track.artists
         return OverlayViewModel(
@@ -525,7 +562,7 @@ final class AppModel: ObservableObject {
             artworkURL: playback.track.artworkURL,
             currentProgress: progress,
             currentLyricLine: currentLine,
-            playbackProgressAnchorMs: playbackProgressAnchorMs,
+            playbackProgressAnchorMs: playbackProgressAnchorMs + Int(lyricsOffsetMs),
             playbackProgressAnchorDate: playbackProgressAnchorDate,
             nextLine: nextLine?.text,
             isPlaying: playback.isPlaying,
@@ -573,6 +610,12 @@ final class AppModel: ObservableObject {
 
     var overlayScalePercentText: String {
         "\(Int((overlayScale * 100).rounded()))%"
+    }
+
+    var lyricsOffsetText: String {
+        let ms = Int(lyricsOffsetMs)
+        if ms == 0 { return "0ms" }
+        return ms > 0 ? "+\(ms)ms" : "\(ms)ms"
     }
 
     var overlayToggleButtonTitle: String {
@@ -649,20 +692,20 @@ final class AppModel: ObservableObject {
         let fileManager = FileManager.default
 
         if let resourceURL = Bundle.main.resourceURL {
-            let bundledExecutable = resourceURL
-                .appendingPathComponent("LyricsService", isDirectory: true)
-                .appendingPathComponent("LyricIsland.LyricsService")
-                .path
-            if fileManager.fileExists(atPath: bundledExecutable) {
-                return bundledExecutable
-            }
-
             let bundledDLL = resourceURL
                 .appendingPathComponent("LyricsService", isDirectory: true)
                 .appendingPathComponent("LyricIsland.LyricsService.dll")
                 .path
             if fileManager.fileExists(atPath: bundledDLL) {
                 return bundledDLL
+            }
+
+            let bundledExecutable = resourceURL
+                .appendingPathComponent("LyricsService", isDirectory: true)
+                .appendingPathComponent("LyricIsland.LyricsService")
+                .path
+            if fileManager.fileExists(atPath: bundledExecutable) {
+                return bundledExecutable
             }
         }
 

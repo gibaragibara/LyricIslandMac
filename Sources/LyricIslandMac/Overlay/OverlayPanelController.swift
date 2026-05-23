@@ -103,6 +103,20 @@ final class OverlayPanelController {
     private static let baseExpandedWidth: CGFloat = 500
     private static let expandedHeight: CGFloat = 126
     private static let hoverFadeOpacity: Double = 0.22
+    private var cachedTextKey: String = ""
+    private var cachedScale: Double = 0
+    private var cachedWidths: CachedTextWidths = .zero
+
+    private struct CachedTextWidths {
+        var compactPrimary: CGFloat = 0
+        var compactSecondary: CGFloat = 0
+        var expandedLine: CGFloat = 0
+        var expandedSubline: CGFloat = 0
+        var expandedNextLine: CGFloat = 0
+        var title: CGFloat = 0
+        var subtitle: CGFloat = 0
+        static let zero = CachedTextWidths()
+    }
 
     func show(model: OverlayViewModel) {
         let panel = panel ?? makePanel()
@@ -153,40 +167,45 @@ final class OverlayPanelController {
         let screen = resolveTargetScreen()
         let collapsed = screen?.notchSize ?? CGSize(width: 224, height: 24)
         let scale = max(0.75, min(1.35, decorated.overlayScale))
-        
-        let primaryFont = NSFont.systemFont(ofSize: 16 * scale, weight: .semibold)
-        let secondaryFont = NSFont.systemFont(ofSize: 12 * scale, weight: .medium)
-        let primaryWidth = (decorated.compactPrimaryLine as NSString).size(withAttributes: [.font: primaryFont]).width
-        let secondaryWidth = (decorated.compactSecondaryLine as NSString).size(withAttributes: [.font: secondaryFont]).width
-        let textWidth = max(primaryWidth, secondaryWidth)
-        
+
+        let textKey = "\(decorated.compactPrimaryLine)\0\(decorated.compactSecondaryLine)\0\(decorated.currentLine)\0\(decorated.currentSubline ?? "")\0\(decorated.nextLine ?? "")\0\(decorated.title)\0\(decorated.subtitle)"
+        if textKey != cachedTextKey || scale != cachedScale {
+            cachedTextKey = textKey
+            cachedScale = scale
+            let primaryFont = NSFont.systemFont(ofSize: 16 * scale, weight: .semibold)
+            let secondaryFont = NSFont.systemFont(ofSize: 12 * scale, weight: .medium)
+            let expandedPrimaryFont = NSFont.systemFont(ofSize: 15 * scale, weight: .semibold)
+            let expandedSublineFont = NSFont.systemFont(ofSize: 11.5 * scale, weight: .medium)
+            let expandedNextLineFont = NSFont.systemFont(ofSize: 10.5 * scale, weight: .regular)
+            let titleFont = NSFont.systemFont(ofSize: 13 * scale, weight: .semibold)
+            let subtitleFont = NSFont.systemFont(ofSize: 10.5 * scale, weight: .regular)
+            cachedWidths = CachedTextWidths(
+                compactPrimary: (decorated.compactPrimaryLine as NSString).size(withAttributes: [.font: primaryFont]).width,
+                compactSecondary: (decorated.compactSecondaryLine as NSString).size(withAttributes: [.font: secondaryFont]).width,
+                expandedLine: (decorated.currentLine as NSString).size(withAttributes: [.font: expandedPrimaryFont]).width,
+                expandedSubline: ((decorated.currentSubline ?? "") as NSString).size(withAttributes: [.font: expandedSublineFont]).width,
+                expandedNextLine: ((decorated.nextLine ?? "") as NSString).size(withAttributes: [.font: expandedNextLineFont]).width,
+                title: (decorated.title as NSString).size(withAttributes: [.font: titleFont]).width,
+                subtitle: (decorated.subtitle as NSString).size(withAttributes: [.font: subtitleFont]).width
+            )
+        }
+        let w = cachedWidths
+        let textWidth = max(w.compactPrimary, w.compactSecondary)
+
         let baseElementWidth = 106.0 * scale + 24.0
         let targetAutoWidth = baseElementWidth + textWidth + 16.0
-        
+
         let safeAreaTop = screen?.safeAreaInsets.top ?? 0
         let hasNotch = safeAreaTop > 0
         let minWidth: CGFloat = hasNotch ? (collapsed.width + 140 * scale) : (240 * scale)
-        
+
         let collapsedWidth = min(max(targetAutoWidth, minWidth), 640 * scale)
         let collapsedHeight = safeAreaTop + 50 * scale
-        
-        let expandedPrimaryFont = NSFont.systemFont(ofSize: 15 * scale, weight: .semibold)
-        let expandedSublineFont = NSFont.systemFont(ofSize: 11.5 * scale, weight: .medium)
-        let expandedNextLineFont = NSFont.systemFont(ofSize: 10.5 * scale, weight: .regular)
-        
-        let expLineWidth = (decorated.currentLine as NSString).size(withAttributes: [.font: expandedPrimaryFont]).width
-        let expSublineWidth = ((decorated.currentSubline ?? "") as NSString).size(withAttributes: [.font: expandedSublineFont]).width
-        let expNextLineWidth = ((decorated.nextLine ?? "") as NSString).size(withAttributes: [.font: expandedNextLineFont]).width
-        
-        let titleFont = NSFont.systemFont(ofSize: 13 * scale, weight: .semibold)
-        let subtitleFont = NSFont.systemFont(ofSize: 10.5 * scale, weight: .regular)
-        let titleWidth = (decorated.title as NSString).size(withAttributes: [.font: titleFont]).width
-        let subtitleWidth = (decorated.subtitle as NSString).size(withAttributes: [.font: subtitleFont]).width
-        let headerTextWidth = max(titleWidth, subtitleWidth)
-        
-        let maxExpandedTextWidth = max(expLineWidth, expSublineWidth, expNextLineWidth)
+
+        let headerTextWidth = max(w.title, w.subtitle)
+        let maxExpandedTextWidth = max(w.expandedLine, w.expandedSubline, w.expandedNextLine)
         let expandedTargetWidth = max(maxExpandedTextWidth, headerTextWidth + 90 * scale) + 68 * scale
-        
+
         let expandedWidth = min(max(expandedTargetWidth, collapsedWidth + 24 * scale), 720 * scale)
         let expandedHeight = max(108, Self.expandedHeight * scale)
 
@@ -240,7 +259,7 @@ final class OverlayPanelController {
         let y = screen.frame.maxY - height
         let nextFrame = NSRect(x: x, y: y, width: width, height: height)
         guard !panel.frame.isApproximatelyEqual(to: nextFrame) else { return }
-        panel.setFrame(nextFrame, display: true)
+        panel.setFrame(nextFrame, display: false)
     }
 
     private func resolveTargetScreen() -> NSScreen? {

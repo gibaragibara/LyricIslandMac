@@ -39,7 +39,7 @@ struct MenuBarView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("歌词源")
+                Text("优先歌词源（读取不到时自动回退另一个）")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -48,6 +48,16 @@ struct MenuBarView: View {
                     Text("网易云").tag(LyricsSource.netease)
                 }
                 .pickerStyle(.segmented)
+
+                HStack {
+                    Text("歌词偏移")
+                        .font(.caption)
+                    Spacer()
+                    Text(model.lyricsOffsetText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $model.lyricsOffsetMs, in: -2000...2000, step: 50)
             }
 
             Divider()

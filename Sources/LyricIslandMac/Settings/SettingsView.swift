@@ -57,12 +57,23 @@ struct SettingsView: View {
             }
 
             Section("歌词源") {
-                Picker("歌词源", selection: $model.preferredChineseLyricsSource) {
+                Picker("优先歌词源", selection: $model.preferredChineseLyricsSource) {
                     Text("QQ 音乐").tag(LyricsSource.qqMusic)
                     Text("网易云").tag(LyricsSource.netease)
                 }
                 .pickerStyle(.segmented)
-                Text("Spotify 歌词始终作为备选来源。")
+                Text("优先使用所选来源，读取不到时自动回退另一个。Spotify 歌词始终作为备选。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("歌词偏移")
+                    Spacer()
+                    Text(model.lyricsOffsetText)
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $model.lyricsOffsetMs, in: -2000...2000, step: 50)
+                Text("歌词偏快往左调（负值延后），偏慢往右调（正值提前）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -101,7 +112,7 @@ struct SettingsView: View {
 
             Section("范围") {
                 Text("播放源：Spotify")
-                Text("歌词源：Spotify + \(model.preferredChineseLyricsSource.displayName)")
+                Text("歌词源：Spotify + \(model.preferredChineseLyricsSource.displayName)（自动回退）")
             }
         }
         .padding(16)
