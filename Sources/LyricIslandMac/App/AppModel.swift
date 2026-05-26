@@ -128,7 +128,7 @@ final class AppModel: ObservableObject {
     private var ticksSinceNetworkSync = 0
     private var playbackProgressAnchorMs = PlaybackSnapshot.demo.progressMs
     private var playbackProgressAnchorDate = Date()
-    private var currentPlaybackProgressMs: Int = PlaybackSnapshot.demo.progressMs
+    private(set) var currentPlaybackProgressMs: Int = PlaybackSnapshot.demo.progressMs
     private var lyricsProgressMs: Int {
         max(0, currentPlaybackProgressMs + Int(lyricsOffsetMs))
     }
@@ -188,7 +188,7 @@ final class AppModel: ObservableObject {
             }
         }
         let timer = Timer(timeInterval: Self.localTickIntervalSeconds, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.tick()
             }
         }
@@ -451,11 +451,6 @@ final class AppModel: ObservableObject {
         let elapsedMs = Int(now.timeIntervalSince(playbackProgressAnchorDate) * 1_000)
         let projectedProgress = min(playback.track.durationMs, max(0, playbackProgressAnchorMs + elapsedMs))
         currentPlaybackProgressMs = projectedProgress
-        // Throttle the @Published mutation: only update playback.progressMs when the
-        // visible second changes, so we don't trigger SwiftUI Observation churn 10x/sec.
-        if playback.progressMs / 1000 != projectedProgress / 1000 {
-            playback.progressMs = projectedProgress
-        }
     }
 
     private static let karaokeDebugEnabled = ProcessInfo.processInfo.environment["KARAOKE_DEBUG"] == "1"

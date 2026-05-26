@@ -13,9 +13,11 @@ struct MenuBarView: View {
                 Text(model.playback.track.artists)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Text("进度: \(model.playback.progressMs / 1000)s / \(model.playback.track.durationMs / 1000)s")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text("进度: \(model.currentPlaybackProgressMs / 1000)s / \(model.playback.track.durationMs / 1000)s")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Divider()

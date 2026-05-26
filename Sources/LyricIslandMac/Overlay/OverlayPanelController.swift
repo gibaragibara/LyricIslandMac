@@ -26,7 +26,7 @@ enum OverlayDisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
-struct OverlayViewModel: Equatable {
+struct OverlayViewModel {
     var title: String
     var subtitle: String
     var artistArtworkURL: String?
@@ -51,6 +51,36 @@ struct OverlayViewModel: Equatable {
     var expandedHeight: CGFloat = 128
     var hasNotch: Bool = false
     var safeAreaTop: CGFloat = 0
+}
+
+extension OverlayViewModel: Equatable {
+    static func == (lhs: OverlayViewModel, rhs: OverlayViewModel) -> Bool {
+        // currentProgress excluded: KaraokeNSView drives its own animation via CADisplayLink,
+        // so progress-only changes must not trigger a SwiftUI re-render.
+        lhs.currentLine == rhs.currentLine &&
+        lhs.currentLyricLine == rhs.currentLyricLine &&
+        lhs.playbackProgressAnchorMs == rhs.playbackProgressAnchorMs &&
+        lhs.playbackProgressAnchorDate == rhs.playbackProgressAnchorDate &&
+        lhs.isPlaying == rhs.isPlaying &&
+        lhs.isExpanded == rhs.isExpanded &&
+        lhs.isPointerHovering == rhs.isPointerHovering &&
+        lhs.overlayOpacity == rhs.overlayOpacity &&
+        lhs.overlayScale == rhs.overlayScale &&
+        lhs.title == rhs.title &&
+        lhs.subtitle == rhs.subtitle &&
+        lhs.artistArtworkURL == rhs.artistArtworkURL &&
+        lhs.currentSubline == rhs.currentSubline &&
+        lhs.compactPrimaryLine == rhs.compactPrimaryLine &&
+        lhs.compactSecondaryLine == rhs.compactSecondaryLine &&
+        lhs.artworkURL == rhs.artworkURL &&
+        lhs.nextLine == rhs.nextLine &&
+        lhs.collapsedWidth == rhs.collapsedWidth &&
+        lhs.collapsedHeight == rhs.collapsedHeight &&
+        lhs.expandedWidth == rhs.expandedWidth &&
+        lhs.expandedHeight == rhs.expandedHeight &&
+        lhs.hasNotch == rhs.hasNotch &&
+        lhs.safeAreaTop == rhs.safeAreaTop
+    }
 }
 
 private extension OverlayViewModel {
