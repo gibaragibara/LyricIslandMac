@@ -52,14 +52,19 @@ struct MenuBarView: View {
                 .pickerStyle(.segmented)
 
                 HStack {
-                    Text("歌词偏移")
+                    Text("歌词延迟（\(model.currentLyricsOffsetSource.displayName)）")
                         .font(.caption)
                     Spacer()
                     Text(model.lyricsOffsetText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Slider(value: $model.lyricsOffsetMs, in: -2000...2000, step: 50)
+                Slider(value: $model.currentLyricsOffsetMs, in: -2000...2000, step: 50)
+
+                Button("清理当前延迟") {
+                    model.clearCurrentLyricsOffset()
+                }
+                .disabled(model.currentLyricsOffsetMs == 0)
             }
 
             Divider()

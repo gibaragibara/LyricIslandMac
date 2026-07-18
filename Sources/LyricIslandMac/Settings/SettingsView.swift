@@ -66,13 +66,25 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                lyricsOffsetSlider(
+                    title: "网易云歌词延迟",
+                    source: .netease,
+                    value: $model.neteaseLyricsOffsetMs
+                )
+                lyricsOffsetSlider(
+                    title: "QQ 音乐歌词延迟",
+                    source: .qqMusic,
+                    value: $model.qqMusicLyricsOffsetMs
+                )
+
                 HStack {
-                    Text("歌词偏移")
+                    Text("当前生效：\(model.currentLyricsOffsetSource.displayName) \(model.lyricsOffsetText)")
                     Spacer()
-                    Text(model.lyricsOffsetText)
-                        .foregroundStyle(.secondary)
+                    Button("清理当前延迟") {
+                        model.clearCurrentLyricsOffset()
+                    }
+                    .disabled(model.currentLyricsOffsetMs == 0)
                 }
-                Slider(value: $model.lyricsOffsetMs, in: -2000...2000, step: 50)
                 Text("歌词偏快往左调（负值延后），偏慢往右调（正值提前）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -116,5 +128,17 @@ struct SettingsView: View {
             }
         }
         .padding(16)
+    }
+
+    private func lyricsOffsetSlider(title: String, source: LyricsSource, value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(model.lyricsOffsetText(for: source))
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: -2000...2000, step: 50)
+        }
     }
 }

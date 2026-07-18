@@ -14,7 +14,9 @@ final class AppModel: ObservableObject {
     private static let overlayDisplayModeKey = "settings.overlayDisplayMode"
     private static let overlayScreenIDKey = "settings.overlayScreenID"
     private static let preferredChineseLyricsSourceKey = "settings.preferredChineseLyricsSource"
-    private static let lyricsOffsetMsKey = "settings.lyricsOffsetMs"
+    private static let legacyLyricsOffsetMsKey = "settings.lyricsOffsetMs"
+    private static let neteaseLyricsOffsetMsKey = "settings.lyricsOffsetMs.netease"
+    private static let qqMusicLyricsOffsetMsKey = "settings.lyricsOffsetMs.qqMusic"
 
     @Published var playback: PlaybackSnapshot = .demo
     @Published var lyricsPayload: LyricsPayload?
@@ -88,15 +90,24 @@ final class AppModel: ObservableObject {
             refreshOverlayIfNeeded()
         }
     }
-    @Published var lyricsOffsetMs: Double {
+    @Published var neteaseLyricsOffsetMs: Double {
         didSet {
-            let clamped = min(max(lyricsOffsetMs, -2000), 2000).rounded()
-            if clamped != lyricsOffsetMs {
-                lyricsOffsetMs = clamped
+            let clamped = Self.normalizedLyricsOffset(neteaseLyricsOffsetMs)
+            if clamped != neteaseLyricsOffsetMs {
+                neteaseLyricsOffsetMs = clamped
                 return
             }
-            UserDefaults.standard.set(lyricsOffsetMs, forKey: Self.lyricsOffsetMsKey)
-            refreshOverlayIfNeeded()
+            saveLyricsOffset(neteaseLyricsOffsetMs, for: .netease)
+        }
+    }
+    @Published var qqMusicLyricsOffsetMs: Double {
+        didSet {
+            let clamped = Self.normalizedLyricsOffset(qqMusicLyricsOffsetMs)
+            if clamped != qqMusicLyricsOffsetMs {
+                qqMusicLyricsOffsetMs = clamped
+                return
+            }
+            saveLyricsOffset(qqMusicLyricsOffsetMs, for: .qqMusic)
         }
     }
     @Published var preferredChineseLyricsSource: LyricsSource {
@@ -120,6 +131,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var currentLyricsOffsetSource: LyricsSource {
+        switch lyricsPayload?.source {
+        case .qqMusic:
+            return .qqMusic
+        case .netease:
+            return .netease
+        default:
+            return preferredChineseLyricsSource == .qqMusic ? .qqMusic : .netease
+        }
+    }
+
+    var currentLyricsOffsetMs: Double {
+        get {
+            lyricsOffsetMs(for: currentLyricsOffsetSource)
+        }
+        set {
+            setLyricsOffset(newValue, for: currentLyricsOffsetSource)
+        }
+    }
+
     private let overlayController = OverlayPanelController()
     private let spotifyClient: SpotifyPlaybackClient
     private let spotifyOAuthClient = SpotifyOAuthClient()
@@ -129,8 +160,11 @@ final class AppModel: ObservableObject {
     private var playbackProgressAnchorMs = PlaybackSnapshot.demo.progressMs
     private var playbackProgressAnchorDate = Date()
     private(set) var currentPlaybackProgressMs: Int = PlaybackSnapshot.demo.progressMs
+    private var effectiveLyricsOffsetMs: Double {
+        lyricsOffsetMs(for: currentLyricsOffsetSource)
+    }
     private var lyricsProgressMs: Int {
-        max(0, currentPlaybackProgressMs + Int(lyricsOffsetMs))
+        max(0, currentPlaybackProgressMs + Int(effectiveLyricsOffsetMs))
     }
     private var lastLyricsTrackID: String?
     private var lyricsFetchTrackIDInFlight: String?
@@ -163,8 +197,11 @@ final class AppModel: ObservableObject {
         let savedDisplayMode = UserDefaults.standard.string(forKey: Self.overlayDisplayModeKey)
         self.overlayDisplayMode = OverlayDisplayMode(rawValue: savedDisplayMode ?? "") ?? .compact
         self.overlayScreenID = UserDefaults.standard.string(forKey: Self.overlayScreenIDKey) ?? ""
-        let savedOffset = UserDefaults.standard.object(forKey: Self.lyricsOffsetMsKey) as? Double
-        self.lyricsOffsetMs = min(max(savedOffset ?? 0, -2000), 2000).rounded()
+        let legacyOffset = UserDefaults.standard.object(forKey: Self.legacyLyricsOffsetMsKey) as? Double
+        let savedNeteaseOffset = UserDefaults.standard.object(forKey: Self.neteaseLyricsOffsetMsKey) as? Double
+        let savedQQMusicOffset = UserDefaults.standard.object(forKey: Self.qqMusicLyricsOffsetMsKey) as? Double
+        self.neteaseLyricsOffsetMs = Self.normalizedLyricsOffset(savedNeteaseOffset ?? legacyOffset ?? 0)
+        self.qqMusicLyricsOffsetMs = Self.normalizedLyricsOffset(savedQQMusicOffset ?? legacyOffset ?? 0)
         let savedChineseSource = UserDefaults.standard.string(forKey: Self.preferredChineseLyricsSourceKey)
         self.preferredChineseLyricsSource = LyricsSource(rawValue: savedChineseSource ?? "") ?? .netease
         overlayController.setDisplayMode(overlayDisplayMode)
@@ -557,7 +594,7 @@ final class AppModel: ObservableObject {
             artworkURL: playback.track.artworkURL,
             currentProgress: progress,
             currentLyricLine: currentLine,
-            playbackProgressAnchorMs: playbackProgressAnchorMs + Int(lyricsOffsetMs),
+            playbackProgressAnchorMs: playbackProgressAnchorMs + Int(effectiveLyricsOffsetMs),
             playbackProgressAnchorDate: playbackProgressAnchorDate,
             nextLine: nextLine?.text,
             isPlaying: playback.isPlaying,
@@ -607,8 +644,64 @@ final class AppModel: ObservableObject {
         "\(Int((overlayScale * 100).rounded()))%"
     }
 
+    func lyricsOffsetMs(for source: LyricsSource) -> Double {
+        switch source {
+        case .netease:
+            return neteaseLyricsOffsetMs
+        case .qqMusic:
+            return qqMusicLyricsOffsetMs
+        case .spotify:
+            return 0
+        }
+    }
+
+    func setLyricsOffset(_ offset: Double, for source: LyricsSource) {
+        let normalized = Self.normalizedLyricsOffset(offset)
+        switch source {
+        case .netease:
+            neteaseLyricsOffsetMs = normalized
+        case .qqMusic:
+            qqMusicLyricsOffsetMs = normalized
+        case .spotify:
+            return
+        }
+    }
+
+    func clearCurrentLyricsOffset() {
+        let source = currentLyricsOffsetSource
+        setLyricsOffset(0, for: source)
+        statusText = "已清理\(source.displayName)歌词延迟"
+    }
+
+    func lyricsOffsetText(for source: LyricsSource) -> String {
+        Self.formattedLyricsOffset(lyricsOffsetMs(for: source))
+    }
+
     var lyricsOffsetText: String {
-        let ms = Int(lyricsOffsetMs)
+        lyricsOffsetText(for: currentLyricsOffsetSource)
+    }
+
+    private func saveLyricsOffset(_ offset: Double, for source: LyricsSource) {
+        switch source {
+        case .netease:
+            UserDefaults.standard.set(offset, forKey: Self.neteaseLyricsOffsetMsKey)
+        case .qqMusic:
+            UserDefaults.standard.set(offset, forKey: Self.qqMusicLyricsOffsetMsKey)
+        case .spotify:
+            return
+        }
+        if currentLyricsOffsetSource == source {
+            _ = updateLyricCursor()
+            refreshOverlayIfNeeded()
+        }
+    }
+
+    private static func normalizedLyricsOffset(_ offset: Double) -> Double {
+        min(max(offset, -2000), 2000).rounded()
+    }
+
+    private static func formattedLyricsOffset(_ offset: Double) -> String {
+        let ms = Int(offset)
         if ms == 0 { return "0ms" }
         return ms > 0 ? "+\(ms)ms" : "\(ms)ms"
     }
