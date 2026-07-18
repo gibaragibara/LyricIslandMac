@@ -35,12 +35,15 @@ actor DotnetLyricsServiceClient {
 
         let process = Process()
         if path.hasSuffix(".dll") {
-            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/dotnet")
+            guard let dotnet = Self.resolveDotnetExecutable() else {
+                throw LyricsServiceError.failedToLaunch("未找到 dotnet 可执行文件，请安装 .NET SDK 或改用已发布的 helper 可执行文件。")
+            }
+            process.executableURL = URL(fileURLWithPath: dotnet)
             process.arguments = [path]
         } else {
             process.executableURL = URL(fileURLWithPath: path)
         }
-        process.environment = mergedDotnetEnvironment()
+        process.environment = Self.mergedDotnetEnvironment()
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -117,13 +120,50 @@ actor DotnetLyricsServiceClient {
         return payload
     }
 
-    private func mergedDotnetEnvironment() -> [String: String] {
+    nonisolated static var resolveDotnetExecutableForTesting: String? { resolveDotnetExecutable() }
+
+    nonisolated static func resolveDotnetExecutable() -> String? {
+        let fileManager = FileManager.default
+        var candidates: [String] = []
+
+        if let root = ProcessInfo.processInfo.environment["DOTNET_ROOT"], !root.isEmpty {
+            candidates.append((root as NSString).appendingPathComponent("dotnet"))
+        }
+        if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
+            for directory in pathEnv.split(separator: ":") {
+                candidates.append("\(directory)/dotnet")
+            }
+        }
+        candidates.append(contentsOf: [
+            "/opt/homebrew/bin/dotnet",
+            "/usr/local/bin/dotnet",
+            "/usr/local/share/dotnet/dotnet",
+            "/opt/homebrew/opt/dotnet/libexec/dotnet",
+        ])
+
+        var seen = Set<String>()
+        for path in candidates where seen.insert(path).inserted {
+            if fileManager.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    nonisolated static func mergedDotnetEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         if env["DOTNET_ROOT"] == nil {
-            env["DOTNET_ROOT"] = "/opt/homebrew/opt/dotnet/libexec"
+            let roots = [
+                "/opt/homebrew/opt/dotnet/libexec",
+                "/usr/local/share/dotnet",
+                "/opt/homebrew/Cellar/dotnet",
+            ]
+            if let root = roots.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+                env["DOTNET_ROOT"] = root
+            }
         }
-        if env["DOTNET_ROOT_ARM64"] == nil {
-            env["DOTNET_ROOT_ARM64"] = "/opt/homebrew/opt/dotnet/libexec"
+        if env["DOTNET_ROOT_ARM64"] == nil, let root = env["DOTNET_ROOT"] {
+            env["DOTNET_ROOT_ARM64"] = root
         }
         return env
     }

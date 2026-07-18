@@ -73,9 +73,11 @@ public static class LyricProviderFacade
             }
         }
 
+        // Prefer better match quality, then honor the request source order
+        // (Swift puts the user's preferred Chinese source first).
         var ordered = candidates
             .OrderByDescending(c => (int)c.MatchType)
-            .ThenBy(c => SourcePriority(c.Source))
+            .ThenBy(c => SourceOrder(c.Source, normalizedSources))
             .ToList();
 
         foreach (var candidate in ordered)
@@ -558,15 +560,17 @@ public static class LyricProviderFacade
         };
     }
 
-    private static int SourcePriority(string source)
+    private static int SourceOrder(string source, IReadOnlyList<string> orderedSources)
     {
-        return source switch
+        for (var i = 0; i < orderedSources.Count; i++)
         {
-            "spotify" => 0,
-            "qq_music" => 1,
-            "netease" => 2,
-            _ => 99
-        };
+            if (string.Equals(orderedSources[i], source, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return 99;
     }
 
     private static List<string> SplitArtists(string artists)

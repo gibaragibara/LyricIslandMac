@@ -1,5 +1,8 @@
+import Foundation
 import Testing
 @testable import LyricIslandMac
+
+// MARK: - Line pairing
 
 @Test func linePairFindsCurrentAndNextLineInSortedLyrics() {
     let lines = [
@@ -37,4 +40,76 @@ import Testing
 
     #expect(pair.current?.text == "second")
     #expect(pair.next == nil)
+}
+
+// MARK: - Karaoke progress
+
+@Test func karaokeProgressUsesLinearLineDurationWhenNoSyllables() {
+    let line = LyricLine(text: "hello", startTimeMs: 1_000, endTimeMs: 3_000)
+
+    #expect(line.karaokeProgress(at: 1_000) == 0)
+    #expect(abs(line.karaokeProgress(at: 2_000) - 0.5) < 0.0001)
+    #expect(line.karaokeProgress(at: 3_000) == 1)
+    #expect(line.karaokeProgress(at: 4_000) == 1)
+}
+
+@Test func karaokeProgressWeightsSyllablesByCharacterCount() {
+    let line = LyricLine(
+        text: "ab c",
+        startTimeMs: 0,
+        endTimeMs: 1_000,
+        syllables: [
+            LyricSyllable(text: "ab", startTimeMs: 0, endTimeMs: 500),
+            LyricSyllable(text: "c", startTimeMs: 500, endTimeMs: 1_000),
+        ]
+    )
+
+    // Midway through first syllable (weight 2 of total 3).
+    let midFirst = line.karaokeProgress(at: 250)
+    #expect(abs(midFirst - (1.0 / 3.0)) < 0.0001)
+
+    // Fully past first syllable.
+    let afterFirst = line.karaokeProgress(at: 500)
+    #expect(abs(afterFirst - (2.0 / 3.0)) < 0.0001)
+
+    #expect(line.karaokeProgress(at: 1_000) == 1)
+}
+
+// MARK: - LRU cache
+
+@Test func lruCacheEvictsOldestWhenFull() {
+    var cache = LRUCache<String, Int>(maxSize: 2)
+    cache.set(1, forKey: "a")
+    cache.set(2, forKey: "b")
+    cache.set(3, forKey: "c")
+
+    #expect(cache.get("a") == nil)
+    #expect(cache.get("b") == 2)
+    #expect(cache.get("c") == 3)
+}
+
+@Test func lruCacheRefreshOnGetPreventsEviction() {
+    var cache = LRUCache<String, Int>(maxSize: 2)
+    cache.set(1, forKey: "a")
+    cache.set(2, forKey: "b")
+    _ = cache.get("a") // touch a → b is now oldest
+    cache.set(3, forKey: "c")
+
+    #expect(cache.get("b") == nil)
+    #expect(cache.get("a") == 1)
+    #expect(cache.get("c") == 3)
+}
+
+// MARK: - Helper path / dotnet discovery smoke
+
+@Test func defaultHelperPathDoesNotHardcodeUserHome() {
+    // Regression: previously returned /Users/<name>/... unconditionally.
+    let path = AppModel.defaultHelperPathForTesting
+    #expect(!path.contains("/Users/gibara/"))
+}
+
+@Test func resolveDotnetExecutableReturnsExistingBinaryOrNil() {
+    if let path = DotnetLyricsServiceClient.resolveDotnetExecutableForTesting {
+        #expect(FileManager.default.isExecutableFile(atPath: path))
+    }
 }

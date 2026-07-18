@@ -33,12 +33,12 @@ final class AppModel: ObservableObject {
     }
     @Published var spotifyRefreshToken: String {
         didSet {
-            UserDefaults.standard.set(spotifyRefreshToken, forKey: Self.spotifyRefreshTokenKey)
+            KeychainStore.set(spotifyRefreshToken, forKey: Self.spotifyRefreshTokenKey)
         }
     }
     @Published private(set) var spotifyAccessToken: String {
         didSet {
-            UserDefaults.standard.set(spotifyAccessToken, forKey: Self.spotifyAccessTokenKey)
+            KeychainStore.set(spotifyAccessToken, forKey: Self.spotifyAccessTokenKey)
         }
     }
     @Published private(set) var spotifyAccessTokenExpiresAt: Date? {
@@ -51,7 +51,7 @@ final class AppModel: ObservableObject {
     }
     @Published var spotifySpDc: String {
         didSet {
-            UserDefaults.standard.set(spotifySpDc, forKey: Self.spotifySpDcKey)
+            KeychainStore.set(spotifySpDc, forKey: Self.spotifySpDcKey)
         }
     }
     @Published var overlayOpacity: Double {
@@ -168,28 +168,40 @@ final class AppModel: ObservableObject {
     }
     private var lastLyricsTrackID: String?
     private var lyricsFetchTrackIDInFlight: String?
-    private var lyricsCache: [String: LyricsPayload] = [:]
-    private static let lyricsCacheMaxSize = 20
+    private var lyricsCache = LRUCache<String, LyricsPayload>(maxSize: 20)
     private var isPlaybackRefreshInFlight = false
+    private var accessTokenRefreshTask: Task<String, Error>?
     private var overlayAllowedByUser = true
     private var realtimeDisplayActivity: NSObjectProtocol?
     private static let localTickIntervalSeconds: TimeInterval = 0.1
     private static let localTickToleranceSeconds: TimeInterval = 0.02
+    /// ~8s while playing.
     private static let playbackNetworkSyncIntervalTicks: Int = 80
+    /// ~30s while paused / no active playback.
+    private static let playbackNetworkSyncIntervalTicksWhenPaused: Int = 300
 
     init(
         spotifyClient: SpotifyPlaybackClient = SpotifyWebPlaybackClient()
     ) {
         self.spotifyClient = spotifyClient
         self.spotifyClientID = UserDefaults.standard.string(forKey: Self.spotifyClientIDKey) ?? ""
-        self.spotifyRefreshToken = UserDefaults.standard.string(forKey: Self.spotifyRefreshTokenKey) ?? ""
-        self.spotifyAccessToken = UserDefaults.standard.string(forKey: Self.spotifyAccessTokenKey) ?? ""
+        self.spotifyRefreshToken = KeychainStore.loadMigrating(
+            account: Self.spotifyRefreshTokenKey,
+            legacyUserDefaultsKey: Self.spotifyRefreshTokenKey
+        )
+        self.spotifyAccessToken = KeychainStore.loadMigrating(
+            account: Self.spotifyAccessTokenKey,
+            legacyUserDefaultsKey: Self.spotifyAccessTokenKey
+        )
         if let ts = UserDefaults.standard.object(forKey: Self.spotifyAccessTokenExpiresAtKey) as? TimeInterval {
             self.spotifyAccessTokenExpiresAt = Date(timeIntervalSince1970: ts)
         } else {
             self.spotifyAccessTokenExpiresAt = nil
         }
-        self.spotifySpDc = UserDefaults.standard.string(forKey: Self.spotifySpDcKey) ?? ""
+        self.spotifySpDc = KeychainStore.loadMigrating(
+            account: Self.spotifySpDcKey,
+            legacyUserDefaultsKey: Self.spotifySpDcKey
+        )
         let savedOpacity = UserDefaults.standard.object(forKey: Self.overlayOpacityKey) as? Double
         self.overlayOpacity = min(max(savedOpacity ?? 0.96, 0.45), 1.0)
         let savedScale = UserDefaults.standard.object(forKey: Self.overlayScaleKey) as? Double
@@ -266,7 +278,7 @@ final class AppModel: ObservableObject {
                 let trackChanged = playback.track.id != snapshot.track.id
                 applyPlaybackSnapshot(snapshot, evaluatedAt: snapshotEvaluatedAt)
                 if trackChanged {
-                    if let cached = lyricsCache[snapshot.track.id] {
+                    if let cached = lyricsCache.get(snapshot.track.id) {
                         lyricsPayload = cached
                         currentLine = nil
                         nextLine = nil
@@ -292,6 +304,14 @@ final class AppModel: ObservableObject {
                 if trackChanged, let artistID = snapshot.primaryArtistID {
                     fetchArtistArtwork(token: token, artistID: artistID, trackID: snapshot.track.id)
                 }
+            } catch SpotifyPlaybackError.noActiveDevice {
+                if playback.isPlaying {
+                    var paused = playback
+                    paused.isPlaying = false
+                    applyPlaybackSnapshot(paused)
+                    applyOverlayVisibilityPolicy()
+                }
+                statusText = "当前没有 Spotify 播放会话"
             } catch {
                 statusText = "Spotify 同步失败: \(error.localizedDescription)"
             }
@@ -318,6 +338,9 @@ final class AppModel: ObservableObject {
             return
         }
 
+        // Prefer Chinese sources in request order; helper uses that order as tiebreaker.
+        let sources = chineseLyricsFallbackChain + [.spotify]
+
         Task { @MainActor in
             lyricsFetchTrackIDInFlight = track.id
             defer {
@@ -328,47 +351,33 @@ final class AppModel: ObservableObject {
             let client = DotnetLyricsServiceClient(executablePath: path)
             let token = try? await ensureSpotifyAccessToken(forceRefresh: false)
 
-            var bestPayload: LyricsPayload?
-            var lastError: Error?
-
-            for chineseSource in chineseLyricsFallbackChain {
-                do {
-                    let payload = try await client.fetchLyrics(
-                        for: track,
-                        sources: [.spotify, chineseSource],
-                        spotifyAccessToken: token,
-                        spotifySpDc: spotifySpDc
-                    )
-                    if payload.source == chineseSource && !payload.lines.isEmpty {
-                        bestPayload = payload
-                        break
-                    }
-                    if bestPayload == nil && !payload.lines.isEmpty {
-                        bestPayload = payload
-                    }
-                } catch {
-                    lastError = error
+            do {
+                let payload = try await client.fetchLyrics(
+                    for: track,
+                    sources: sources,
+                    spotifyAccessToken: token,
+                    spotifySpDc: spotifySpDc
+                )
+                // Drop stale results if the user already switched tracks.
+                guard playback.track.id == track.id else { return }
+                guard !payload.lines.isEmpty else {
+                    statusText = "未找到可用歌词"
+                    return
                 }
-            }
 
-            if let payload = bestPayload {
                 lyricsPayload = payload
                 currentLine = nil
                 nextLine = nil
                 lastLyricsTrackID = track.id
-                if lyricsCache.count >= Self.lyricsCacheMaxSize {
-                    lyricsCache.removeAll()
-                }
-                lyricsCache[track.id] = payload
+                lyricsCache.set(payload, forKey: track.id)
                 statusText = "歌词加载成功（来源：\(payload.source.displayName)）"
                 updateLyricCursor()
                 refreshOverlayIfNeeded()
-            } else if let error = lastError {
+            } catch {
+                guard playback.track.id == track.id else { return }
                 statusText = autoTriggered
                     ? "Spotify 播放状态已同步，但歌词加载失败: \(error.localizedDescription)"
                     : "歌词服务失败: \(error.localizedDescription)"
-            } else {
-                statusText = "未找到可用歌词"
             }
         }
     }
@@ -428,7 +437,10 @@ final class AppModel: ObservableObject {
     private func tick() {
         updateLocalPlaybackProgress()
         ticksSinceNetworkSync += 1
-        if ticksSinceNetworkSync >= Self.playbackNetworkSyncIntervalTicks {
+        let syncInterval = playback.isPlaying
+            ? Self.playbackNetworkSyncIntervalTicks
+            : Self.playbackNetworkSyncIntervalTicksWhenPaused
+        if ticksSinceNetworkSync >= syncInterval {
             ticksSinceNetworkSync = 0
             refreshPlayback()
         }
@@ -751,6 +763,27 @@ final class AppModel: ObservableObject {
             return spotifyAccessToken
         }
 
+        if let inFlight = accessTokenRefreshTask {
+            return try await inFlight.value
+        }
+
+        let task = Task { @MainActor in
+            try await self.performAccessTokenRefresh(forceRefresh: forceRefresh)
+        }
+        accessTokenRefreshTask = task
+        defer { accessTokenRefreshTask = nil }
+        return try await task.value
+    }
+
+    private func performAccessTokenRefresh(forceRefresh: Bool) async throws -> String {
+        let now = Date()
+        if !forceRefresh,
+           !spotifyAccessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let expiresAt = spotifyAccessTokenExpiresAt,
+           expiresAt.timeIntervalSince(now) > 90 {
+            return spotifyAccessToken
+        }
+
         guard hasSpotifyOAuthCredentials else {
             if !spotifyAccessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return spotifyAccessToken
@@ -776,10 +809,28 @@ final class AppModel: ObservableObject {
         return formatter
     }()
 
-    private static var defaultHelperExecutablePath: String {
+    /// Exposed for unit tests without opening the full default helper surface.
+    nonisolated static var defaultHelperPathForTesting: String { defaultHelperExecutablePath }
+
+    nonisolated private static var defaultHelperExecutablePath: String {
         let fileManager = FileManager.default
+        let relativeCandidates = [
+            "lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService",
+            "lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll",
+            "lyrics-service/LyricIsland.LyricsService/bin/Release/net10.0/LyricIsland.LyricsService",
+            "lyrics-service/LyricIsland.LyricsService/bin/Release/net10.0/LyricIsland.LyricsService.dll",
+        ]
 
         if let resourceURL = Bundle.main.resourceURL {
+            let bundledExecutable = resourceURL
+                .appendingPathComponent("LyricsService", isDirectory: true)
+                .appendingPathComponent("LyricIsland.LyricsService")
+                .path
+            if fileManager.isExecutableFile(atPath: bundledExecutable)
+                || fileManager.fileExists(atPath: bundledExecutable) {
+                return bundledExecutable
+            }
+
             let bundledDLL = resourceURL
                 .appendingPathComponent("LyricsService", isDirectory: true)
                 .appendingPathComponent("LyricIsland.LyricsService.dll")
@@ -787,22 +838,39 @@ final class AppModel: ObservableObject {
             if fileManager.fileExists(atPath: bundledDLL) {
                 return bundledDLL
             }
+        }
 
-            let bundledExecutable = resourceURL
-                .appendingPathComponent("LyricsService", isDirectory: true)
-                .appendingPathComponent("LyricIsland.LyricsService")
-                .path
-            if fileManager.fileExists(atPath: bundledExecutable) {
-                return bundledExecutable
+        var roots: [URL] = []
+        roots.append(URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true))
+
+        // Sources/LyricIslandMac/App/AppModel.swift → repository root while developing via SwiftPM.
+        let sourceFile = URL(fileURLWithPath: #filePath)
+        let repoRootFromSource = sourceFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        roots.append(repoRootFromSource)
+
+        if let executableURL = Bundle.main.executableURL {
+            roots.append(executableURL.deletingLastPathComponent())
+        }
+
+        var seen = Set<String>()
+        for root in roots {
+            let rootPath = root.standardizedFileURL.path
+            guard seen.insert(rootPath).inserted else { continue }
+            for relative in relativeCandidates {
+                let candidate = root.appendingPathComponent(relative).path
+                if fileManager.fileExists(atPath: candidate) {
+                    return candidate
+                }
             }
         }
 
-        let repoExecutable = "/Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService"
-        if fileManager.fileExists(atPath: repoExecutable) {
-            return repoExecutable
-        }
-
-        return "/Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll"
+        return repoRootFromSource
+            .appendingPathComponent(relativeCandidates[0])
+            .path
     }
 }
 
