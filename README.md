@@ -75,10 +75,10 @@ cd /Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService
 dotnet build
 ```
 
-Default helper path:
+Default helper path while developing (bundled helpers are preferred in packaged apps):
 
 ```text
-/Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll
+lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService
 ```
 
 ## Packaging
@@ -151,8 +151,8 @@ Still incomplete:
 
 - More advanced source ranking and merge logic
 - Rich translation/subline composition
-- More production-grade credential storage such as Keychain
+- More complete provider integration tests and error diagnostics
 
 ## Acknowledgements
 
-Lyric lookup in the local helper is powered by [`Lyricify-Lyrics-Helper`](https://github.com/WXRIW/Lyricify-Lyrics-Helper). This project provides the core lyric parsing, search, and provider integration capabilities used by the bundled `.NET` service.
+Lyric lookup in the local helper is powered by [`Lyricify-Lyrics-Helper`](https://github.com/WXRIW/Lyricify-Lyrics-Helper). The vendored snapshot is `v0.2.0` plus upstream commit `983709b`; it provides the core lyric parsing, search, and provider integration capabilities used by the bundled `.NET` service.

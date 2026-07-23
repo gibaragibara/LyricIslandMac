@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 actor DotnetLyricsServiceClient {
     private static let helperTimeoutSeconds: TimeInterval = 25
@@ -21,7 +22,11 @@ actor DotnetLyricsServiceClient {
         guard !path.isEmpty else {
             throw LyricsServiceError.helperPathMissing
         }
-        guard FileManager.default.fileExists(atPath: path) else {
+        let isManagedAssembly = path.lowercased().hasSuffix(".dll")
+        let isAvailable = isManagedAssembly
+            ? FileManager.default.fileExists(atPath: path)
+            : FileManager.default.isExecutableFile(atPath: path)
+        guard isAvailable else {
             throw LyricsServiceError.helperNotExecutable(path)
         }
 
@@ -34,7 +39,7 @@ actor DotnetLyricsServiceClient {
         let requestData = try encoder.encode(request)
 
         let process = Process()
-        if path.hasSuffix(".dll") {
+        if isManagedAssembly {
             guard let dotnet = Self.resolveDotnetExecutable() else {
                 throw LyricsServiceError.failedToLaunch("未找到 dotnet 可执行文件，请安装 .NET SDK 或改用已发布的 helper 可执行文件。")
             }
@@ -77,6 +82,14 @@ actor DotnetLyricsServiceClient {
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             throw LyricsServiceError.failedToLaunch(error.localizedDescription)
         }
+        defer {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            process.terminationHandler = nil
+            if process.isRunning {
+                Self.terminateProcess(process)
+            }
+        }
 
         if var payload = String(data: requestData, encoding: .utf8) {
             payload.append("\n")
@@ -86,13 +99,7 @@ actor DotnetLyricsServiceClient {
         }
         stdinPipe.fileHandleForWriting.closeFile()
 
-        do {
-            try await waitForExit(process, timeout: Self.helperTimeoutSeconds)
-        } catch {
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            throw error
-        }
+        try await waitForExit(process, timeout: Self.helperTimeoutSeconds)
 
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
@@ -169,37 +176,77 @@ actor DotnetLyricsServiceClient {
     }
 
     private func waitForExit(_ process: Process, timeout: TimeInterval) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    process.terminationHandler = { _ in
-                        continuation.resume()
-                    }
-                }
-            }
-
-            group.addTask {
-                let duration = UInt64(max(timeout, 1) * 1_000_000_000)
-                try await Task.sleep(nanoseconds: duration)
-                if process.isRunning {
-                    process.terminate()
-                }
-                throw LyricsServiceError.timedOut(timeout)
-            }
-
-            defer {
-                group.cancelAll()
-                process.terminationHandler = nil
-            }
-
-            guard let result = await group.nextResult() else { return }
-            switch result {
-            case .success:
-                return
-            case let .failure(error):
-                throw error
-            }
+        enum WaitResult {
+            case exited
+            case timedOut
         }
+
+        let state = ProcessWaitState()
+        let result = await withTaskCancellationHandler(operation: {
+            await withTaskGroup(of: WaitResult.self) { group -> WaitResult in
+                group.addTask {
+                    process.waitUntilExit()
+                    return state.didTimeOut ? .timedOut : .exited
+                }
+
+                group.addTask {
+                    let duration = UInt64(max(timeout, 1) * 1_000_000_000)
+                    do {
+                        try await Task.sleep(nanoseconds: duration)
+                    } catch {
+                        Self.terminateProcess(process)
+                        return .exited
+                    }
+                    state.markTimedOut()
+                    Self.terminateProcess(process)
+                    return .timedOut
+                }
+
+                let firstResult = await group.next() ?? .exited
+                group.cancelAll()
+                return state.didTimeOut ? .timedOut : firstResult
+            }
+        }, onCancel: {
+            if process.isRunning {
+                process.terminate()
+            }
+        })
+
+        if case .timedOut = result {
+            throw LyricsServiceError.timedOut(timeout)
+        }
+        try Task.checkCancellation()
+    }
+
+    private nonisolated static func terminateProcess(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+
+        let deadline = Date().addingTimeInterval(1)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
+    }
+}
+
+private final class ProcessWaitState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timedOut = false
+
+    var didTimeOut: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return timedOut
+    }
+
+    func markTimedOut() {
+        lock.lock()
+        timedOut = true
+        lock.unlock()
     }
 }
 

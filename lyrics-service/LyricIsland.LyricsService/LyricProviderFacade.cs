@@ -1,4 +1,5 @@
 using Lyricify.Lyrics.Helpers;
+using Lyricify.Lyrics.Helpers.Optimization;
 using Lyricify.Lyrics.Models;
 using Lyricify.Lyrics.Searchers;
 using Lyricify.Lyrics.Searchers.Helpers;
@@ -7,37 +8,14 @@ namespace LyricIsland.LyricsService;
 
 public static class LyricProviderFacade
 {
-    private sealed record SourceCandidate(string Source, ISearchResult SearchResult, CompareHelper.MatchType MatchType);
+    private sealed record SourceCandidate(string Source, ISearchResult SearchResult);
     private sealed record ParsedLyricsResult(LyricsData Main, LyricsData? Translation);
-    private sealed record LyricsSelection(LyricsPayload Payload, LyricsFeatures Features);
-    private sealed record ConvertedLyrics(List<LyricLine> Lines, LyricsFeatures Features);
-    private readonly record struct LyricsFeatures(bool HasTranslation, bool HasSyllables);
+    private sealed record ConvertedLyrics(List<LyricLine> Lines);
 
     public static async Task<LyricsPayload> SearchAndResolveAsync(LyricsServiceRequest request)
     {
         ConfigureSpotifyProvider(request);
         var normalizedSources = NormalizeSources(request.Sources);
-        LyricsSelection? bestSelection = null;
-
-        if (normalizedSources.Contains("spotify"))
-        {
-            var spotifyDirect = await TryFetchSpotifyDirectAsync(request.Track);
-            if (spotifyDirect is not null && spotifyDirect.Lines is { Count: > 0 })
-            {
-                var converted = ConvertLines(spotifyDirect.Lines, null);
-                if (converted.Lines.Count > 0)
-                {
-                    bestSelection = new LyricsSelection(
-                        new LyricsPayload("spotify", request.Track, converted.Lines),
-                        converted.Features
-                    );
-                    if (IsIdeal(bestSelection.Features))
-                    {
-                        return bestSelection.Payload;
-                    }
-                }
-            }
-        }
 
         var track = new TrackMultiArtistMetadata
         {
@@ -47,25 +25,17 @@ public static class LyricProviderFacade
             DurationMs = request.Track.DurationMs,
         };
 
-        var candidates = new List<SourceCandidate>();
         foreach (var source in normalizedSources)
         {
-            var searcher = BuildSearcher(source);
-            if (searcher is null)
-            {
-                continue;
-            }
-
             try
             {
-                var result = await searcher.SearchForResult(track, CompareHelper.MatchType.VeryLow);
-                if (result is null)
+                // Request order is the user-visible source policy: only fall
+                // back after the earlier source has no usable lyric payload.
+                var payload = await TryResolveSourceAsync(source, request, track);
+                if (payload is not null)
                 {
-                    continue;
+                    return payload;
                 }
-
-                var match = result.MatchType ?? CompareHelper.CompareTrack(track, result);
-                candidates.Add(new SourceCandidate(source, result, match));
             }
             catch
             {
@@ -73,59 +43,50 @@ public static class LyricProviderFacade
             }
         }
 
-        // Prefer better match quality, then honor the request source order
-        // (Swift puts the user's preferred Chinese source first).
-        var ordered = candidates
-            .OrderByDescending(c => (int)c.MatchType)
-            .ThenBy(c => SourceOrder(c.Source, normalizedSources))
-            .ToList();
+        throw new InvalidOperationException("在已选歌词源中未找到可用歌词。");
+    }
 
-        foreach (var candidate in ordered)
+    private static async Task<LyricsPayload?> TryResolveSourceAsync(
+        string source,
+        LyricsServiceRequest request,
+        TrackMultiArtistMetadata track
+    )
+    {
+        if (source == "spotify")
         {
-            try
+            var direct = await TryFetchSpotifyDirectAsync(request.Track);
+            if (direct?.Lines is { Count: > 0 })
             {
-                var parsed = await TryFetchAndParseAsync(candidate);
-                if (parsed is null || parsed.Main.Lines is not { Count: > 0 })
+                var converted = ConvertLines(direct.Lines, null, track);
+                if (converted.Lines.Count > 0)
                 {
-                    continue;
+                    return new LyricsPayload("spotify", request.Track, converted.Lines);
                 }
-
-                var converted = ConvertLines(parsed.Main.Lines, parsed.Translation?.Lines);
-                if (converted.Lines.Count == 0)
-                {
-                    continue;
-                }
-
-                var selection = new LyricsSelection(
-                    new LyricsPayload(candidate.Source, request.Track, converted.Lines),
-                    converted.Features
-                );
-
-                if (ShouldReplace(bestSelection, selection.Features))
-                {
-                    bestSelection = selection;
-                }
-                if (IsIdeal(selection.Features))
-                {
-                    return selection.Payload;
-                }
-            }
-            catch
-            {
-                // Continue with next candidate.
             }
         }
 
-        if (bestSelection is not null)
+        var searcher = BuildSearcher(source);
+        if (searcher is null)
         {
-            return bestSelection.Payload;
-        }
-        if (candidates.Count == 0)
-        {
-            throw new InvalidOperationException("在已选歌词源中未找到可用候选。");
+            return null;
         }
 
-        throw new InvalidOperationException("所有候选歌词源都解析失败。");
+        var result = await searcher.SearchForResult(track, CompareHelper.MatchType.VeryLow);
+        if (result is null)
+        {
+            return null;
+        }
+
+        var parsed = await TryFetchAndParseAsync(new SourceCandidate(source, result));
+        if (parsed is null || parsed.Main.Lines is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var convertedResult = ConvertLines(parsed.Main.Lines, parsed.Translation?.Lines, track);
+        return convertedResult.Lines.Count > 0
+            ? new LyricsPayload(source, request.Track, convertedResult.Lines)
+            : null;
     }
 
     private static async Task<LyricsData?> TryFetchSpotifyDirectAsync(TrackInfo track)
@@ -235,28 +196,35 @@ public static class LyricProviderFacade
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(response.Yrc?.Lyric))
+        var yrcParsed = !string.IsNullOrWhiteSpace(response.Yrc?.Lyric)
+            ? ParseHelper.ParseLyrics(response.Yrc.Lyric, LyricsRawTypes.Yrc)
+            : null;
+        var lrcParsed = !string.IsNullOrWhiteSpace(response.Lrc?.Lyric)
+            ? ParseHelper.ParseLyrics(response.Lrc.Lyric, LyricsRawTypes.Lrc)
+            : null;
+        var yrcTranslation = TryParseTranslationData(response.Ytlrc?.Lyric);
+        var lrcTranslation = TryParseTranslationData(response.Tlyric?.Lyric);
+
+        // Some catalog copies contain a sparse YRC overlay even though their
+        // ordinary LRC is complete. Keep word timing only when its text coverage
+        // is comparable to the line-synced fallback.
+        if (yrcParsed?.Lines is { Count: > 0 } yrcLines
+            && !HasLowTextCoverage(yrcLines, lrcParsed?.Lines))
         {
-            var yrcParsed = ParseHelper.ParseLyrics(response.Yrc.Lyric, LyricsRawTypes.Yrc);
-            if (yrcParsed?.Lines is { Count: > 0 })
-            {
-                var translation = TryParseTranslationData(response.Ytlrc?.Lyric)
-                    ?? TryParseTranslationData(response.Tlyric?.Lyric);
-                return new ParsedLyricsResult(yrcParsed, translation);
-            }
+            var translation = SelectBestTranslation(yrcLines, yrcTranslation, lrcTranslation);
+            return new ParsedLyricsResult(yrcParsed, translation);
         }
 
-        if (!string.IsNullOrWhiteSpace(response.Lrc?.Lyric))
+        if (lrcParsed?.Lines is { Count: > 0 } lrcLines)
         {
-            var lrcParsed = ParseHelper.ParseLyrics(response.Lrc.Lyric, LyricsRawTypes.Lrc);
-            if (lrcParsed?.Lines is not { Count: > 0 })
-            {
-                return null;
-            }
-
-            var translation = TryParseTranslationData(response.Tlyric?.Lyric)
-                ?? TryParseTranslationData(response.Ytlrc?.Lyric);
+            var translation = SelectBestTranslation(lrcLines, lrcTranslation, yrcTranslation);
             return new ParsedLyricsResult(lrcParsed, translation);
+        }
+
+        if (yrcParsed?.Lines is { Count: > 0 } remainingYrcLines)
+        {
+            var translation = SelectBestTranslation(remainingYrcLines, yrcTranslation, lrcTranslation);
+            return new ParsedLyricsResult(yrcParsed, translation);
         }
 
         return null;
@@ -290,26 +258,127 @@ public static class LyricProviderFacade
         return null;
     }
 
-    private static ConvertedLyrics ConvertLines(IReadOnlyList<ILineInfo> lines, IReadOnlyList<ILineInfo>? translationLines)
+    private static LyricsData? SelectBestTranslation(
+        IReadOnlyList<ILineInfo> mainLines,
+        params LyricsData?[] candidates
+    )
+    {
+        LyricsData? best = null;
+        var bestTimedMatches = -1;
+        var bestMeaningfulLines = -1;
+
+        foreach (var candidate in candidates)
+        {
+            if (candidate?.Lines is not { Count: > 0 } translationLines)
+            {
+                continue;
+            }
+
+            var timedMatches = CountTimedTranslationMatches(mainLines, translationLines);
+            var meaningfulLines = translationLines.Count(IsContentLine);
+            if (timedMatches > bestTimedMatches
+                || (timedMatches == bestTimedMatches && meaningfulLines > bestMeaningfulLines))
+            {
+                best = candidate;
+                bestTimedMatches = timedMatches;
+                bestMeaningfulLines = meaningfulLines;
+            }
+        }
+
+        return best;
+    }
+
+    private static int CountTimedTranslationMatches(
+        IReadOnlyList<ILineInfo> mainLines,
+        IReadOnlyList<ILineInfo> translationLines
+    )
+    {
+        var translationsByTime = BuildTranslationLookupByTime(translationLines);
+        if (translationsByTime is null)
+        {
+            return 0;
+        }
+
+        var matches = 0;
+        foreach (var line in mainLines)
+        {
+            if (!IsContentLine(line) || !line.StartTime.HasValue)
+            {
+                continue;
+            }
+            if (FindTranslationByTime(translationsByTime, line.StartTime.Value) is not null)
+            {
+                matches++;
+            }
+        }
+        return matches;
+    }
+
+    private static bool HasLowTextCoverage(
+        IReadOnlyList<ILineInfo> detailedLines,
+        IReadOnlyList<ILineInfo>? fallbackLines
+    )
+    {
+        if (fallbackLines is not { Count: > 0 })
+        {
+            return false;
+        }
+
+        const int minimumReferenceCharacters = 40;
+        const double minimumCoverageRatio = 0.72;
+        var fallbackCharacters = CountContentCharacters(fallbackLines);
+        if (fallbackCharacters < minimumReferenceCharacters)
+        {
+            return false;
+        }
+
+        var detailedCharacters = CountContentCharacters(detailedLines);
+        return detailedCharacters < fallbackCharacters * minimumCoverageRatio;
+    }
+
+    private static int CountContentCharacters(IEnumerable<ILineInfo> lines)
+    {
+        return lines
+            .Where(IsContentLine)
+            .Sum(line => line.Text.Count(character =>
+                !char.IsWhiteSpace(character)
+                && !char.IsPunctuation(character)
+                && !char.IsSymbol(character)));
+    }
+
+    private static bool IsContentLine(ILineInfo line)
+    {
+        return !string.IsNullOrWhiteSpace(line.Text)
+            && !InfoLines.IsInfoLine(line.Text);
+    }
+
+    private static ConvertedLyrics ConvertLines(
+        IReadOnlyList<ILineInfo> lines,
+        IReadOnlyList<ILineInfo>? translationLines,
+        ITrackMetadata? trackMetadata
+    )
     {
         var ordered = lines
             .Select((line, index) => new { line, index })
             .Where(x => !string.IsNullOrWhiteSpace(x.line.Text))
+            .Where(x => !InfoLines.IsInfoLine(x.line.Text, trackMetadata))
             .OrderBy(x => x.line.StartTime ?? int.MaxValue)
             .ThenBy(x => x.index)
             .ToList();
 
         if (ordered.Count == 0)
         {
-            return new ConvertedLyrics(new List<LyricLine>(), new LyricsFeatures(false, false));
+            return new ConvertedLyrics(new List<LyricLine>());
         }
 
         var hasTimedLine = ordered.Any(x => x.line.StartTime.HasValue);
         var output = new List<LyricLine>(ordered.Count);
         var translationsByTime = BuildTranslationLookupByTime(translationLines);
-        var translationsByIndex = BuildTranslationLookupByIndex(translationLines);
-        var hasTranslation = false;
-        var hasSyllables = false;
+        // Timed translation sets can use different line splitting. Falling back
+        // to their list index attaches unrelated text to otherwise valid lines.
+        var translationsByIndex = translationsByTime is { Count: > 0 }
+            ? null
+            : BuildTranslationLookupByIndex(translationLines);
 
         for (var i = 0; i < ordered.Count; i++)
         {
@@ -329,19 +398,10 @@ public static class LyricProviderFacade
 
             var subtext = ResolveSubtext(current, text, start, i, translationsByTime, translationsByIndex);
             var syllables = ExtractSyllables(current);
-            if (!string.IsNullOrWhiteSpace(subtext))
-            {
-                hasTranslation = true;
-            }
-            if (syllables is { Count: > 0 })
-            {
-                hasSyllables = true;
-            }
-
             output.Add(new LyricLine(text, subtext, start, end, syllables));
         }
 
-        return new ConvertedLyrics(output, new LyricsFeatures(hasTranslation, hasSyllables));
+        return new ConvertedLyrics(output);
     }
 
     private static string? ResolveSubtext(
@@ -502,38 +562,14 @@ public static class LyricProviderFacade
         return output.Count > 0 ? output : null;
     }
 
-    private static bool IsIdeal(LyricsFeatures features)
-    {
-        return features.HasTranslation && features.HasSyllables;
-    }
-
-    private static bool ShouldReplace(LyricsSelection? currentBest, LyricsFeatures candidateFeatures)
-    {
-        if (currentBest is null)
-        {
-            return true;
-        }
-
-        var best = currentBest.Features;
-        if (candidateFeatures.HasTranslation != best.HasTranslation)
-        {
-            return candidateFeatures.HasTranslation;
-        }
-        if (candidateFeatures.HasSyllables != best.HasSyllables)
-        {
-            return candidateFeatures.HasSyllables;
-        }
-
-        return false;
-    }
-
     private static List<string> NormalizeSources(IEnumerable<string> sources)
     {
         var normalized = new List<string>();
         foreach (var source in sources)
         {
             var value = source?.Trim().ToLowerInvariant();
-            if (value is "spotify" or "qq_music" or "netease")
+            if (value is ("spotify" or "qq_music" or "netease")
+                && !normalized.Contains(value, StringComparer.Ordinal))
             {
                 normalized.Add(value);
             }
@@ -558,19 +594,6 @@ public static class LyricProviderFacade
             "netease" => new NeteaseSearcher(),
             _ => null
         };
-    }
-
-    private static int SourceOrder(string source, IReadOnlyList<string> orderedSources)
-    {
-        for (var i = 0; i < orderedSources.Count; i++)
-        {
-            if (string.Equals(orderedSources[i], source, StringComparison.Ordinal))
-            {
-                return i;
-            }
-        }
-
-        return 99;
     }
 
     private static List<string> SplitArtists(string artists)

@@ -21,6 +21,12 @@ namespace Lyricify.Lyrics.Parsers
             public string Type { get; init; } = ""; // person/group/other/...
         }
 
+        private sealed class TranslationValue
+        {
+            public string Text { get; init; } = "";
+            public List<string> SpanTexts { get; init; } = new();
+        }
+
         public static LyricsData Parse(string ttml)
         {
             var data = new LyricsData
@@ -109,17 +115,18 @@ namespace Lyricify.Lyrics.Parsers
                     var replacement = tmap
                         .Where(kv => kv.Key.type.Equals("replacement", StringComparison.OrdinalIgnoreCase))
                         .Select(kv => kv.Value)
-                        .FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+                        .FirstOrDefault(v => !string.IsNullOrWhiteSpace(v.Text));
 
-                    if (!string.IsNullOrWhiteSpace(replacement))
+                    if (replacement != null)
                     {
-                        line = ApplyReplacementMainOnly(line, replacement!);
+                        line = ApplyReplacementMainOnly(line, replacement.Text, replacement.SpanTexts);
                         SetAlignment(line, align);
                     }
 
                     // subtitle translations
                     var subtitles = tmap
                         .Where(kv => kv.Key.type.Equals("subtitle", StringComparison.OrdinalIgnoreCase))
+                        .Select(kv => new KeyValuePair<(string type, string lang), string>(kv.Key, kv.Value.Text))
                         .ToList();
 
                     if (subtitles.Count > 0)
@@ -194,6 +201,17 @@ namespace Lyricify.Lyrics.Parsers
             var hit = agents.Find(a => a.Id == agentId);
             if (hit == null) return LyricsAlignment.Unspecified;
 
+            var typeGroups = agents.GroupBy(a => a.Type, StringComparer.OrdinalIgnoreCase).ToList();
+            if (agents.Count == 2
+                && typeGroups.Count == 2
+                && typeGroups.All(g => g.Count() == 1)
+                && typeGroups.Any(g => string.Equals(g.Key, "person", StringComparison.OrdinalIgnoreCase)))
+            {
+                return string.Equals(hit.Type, "person", StringComparison.OrdinalIgnoreCase)
+                    ? LyricsAlignment.Left
+                    : LyricsAlignment.Right;
+            }
+
             bool left;
             if (hit.Type == "person") left = persons.IndexOf(hit) % 2 == 0;
             else if (hit.Type == "group") left = groups.IndexOf(hit) % 2 == 0;
@@ -208,7 +226,11 @@ namespace Lyricify.Lyrics.Parsers
         // =========================
         private static void ParseITunesMetadata(XDocument doc, LyricsData data)
         {
+            var metadata = doc.Descendants(NsTtml + "metadata").FirstOrDefault();
             var meta = doc.Descendants(NsItunes + "iTunesMetadata").FirstOrDefault();
+
+            ParseTrackMetadata(doc, metadata, meta, data);
+
             if (meta == null) return;
 
             var leadingSilence = (string?)meta.Attribute("leadingSilence");
@@ -227,9 +249,138 @@ namespace Lyricify.Lyrics.Parsers
                 data.Writers = writers;
         }
 
-        private static Dictionary<string, Dictionary<(string type, string lang), string>> ParseTranslations(XDocument doc)
+        private static void ParseTrackMetadata(XDocument doc, XElement? metadata, XElement? iTunesMetadata, LyricsData data)
         {
-            var result = new Dictionary<string, Dictionary<(string type, string lang), string>>(StringComparer.Ordinal);
+            data.TrackMetadata ??= new TrackMetadata();
+            var track = data.TrackMetadata;
+
+            SetIfEmpty(x => track.Title = x, track.Title,
+                FindMetadataValue(iTunesMetadata, metadata, doc.Root, "title", "trackTitle", "songTitle", "songName", "musicName"));
+            SetIfEmpty(x => track.Artist = x, track.Artist,
+                FindMetadataValue(iTunesMetadata, metadata, doc.Root, "artist", "artists", "artistName", "songArtist", "singer", "performer", "performers"));
+            SetIfEmpty(x => track.Album = x, track.Album,
+                FindMetadataValue(iTunesMetadata, metadata, doc.Root, "album", "albumName"));
+            SetIfEmpty(x => track.AlbumArtist = x, track.AlbumArtist,
+                FindMetadataValue(iTunesMetadata, metadata, doc.Root, "albumArtist", "albumArtistName"));
+            SetIfEmpty(x => track.Isrc = x, track.Isrc,
+                FindMetadataValue(iTunesMetadata, metadata, doc.Root, "isrc"));
+
+            if (!track.DurationMs.HasValue)
+            {
+                var bodyDur = doc.Descendants(NsTtml + "body")
+                    .Select(x => (string?)x.Attribute("dur"))
+                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+
+                var duration = ParseTimeMs(bodyDur) ?? ParseMetadataDuration(iTunesMetadata, metadata, doc.Root);
+                if (duration.HasValue)
+                    track.DurationMs = duration.Value;
+            }
+
+            var rootLang = (string?)doc.Root?.Attribute(NsXml + "lang");
+            var simplifiedReplacementLang = doc.Descendants(NsItunes + "translation")
+                .Where(x => string.Equals(((string?)x.Attribute("type") ?? string.Empty).Trim(), "replacement", StringComparison.OrdinalIgnoreCase))
+                .Select(x => ((string?)x.Attribute(NsXml + "lang") ?? string.Empty).Trim())
+                .FirstOrDefault(x => IsLanguage(rootLang, "zh-Hant") && IsLanguage(x, "zh-Hans"));
+
+            if (!string.IsNullOrWhiteSpace(simplifiedReplacementLang))
+            {
+                track.Language = new List<string> { "zh-Hans" };
+            }
+            else if (!string.IsNullOrWhiteSpace(rootLang))
+            {
+                track.Language = new List<string> { rootLang.Trim() };
+            }
+        }
+
+        private static void SetIfEmpty(Action<string> setter, string? currentValue, string? newValue)
+        {
+            if (string.IsNullOrWhiteSpace(currentValue) && !string.IsNullOrWhiteSpace(newValue))
+                setter(newValue.Trim());
+        }
+
+        private static string? FindMetadataValue(params object?[] rootsAndKeys)
+        {
+            var roots = rootsAndKeys.OfType<XElement>().Distinct().ToList();
+            var keys = rootsAndKeys.OfType<string>().Select(NormalizeMetadataKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var root in roots)
+            {
+                foreach (var element in root.DescendantsAndSelf())
+                {
+                    foreach (var attr in element.Attributes())
+                    {
+                        if (keys.Contains(NormalizeMetadataKey(attr.Name.LocalName)) && !string.IsNullOrWhiteSpace(attr.Value))
+                            return attr.Value.Trim();
+                    }
+
+                    var key = GetMetadataKey(element);
+                    if (!string.IsNullOrWhiteSpace(key) && keys.Contains(NormalizeMetadataKey(key)))
+                    {
+                        var value = GetMetadataValue(element);
+                        if (!string.IsNullOrWhiteSpace(value))
+                            return value.Trim();
+                    }
+
+                    if (keys.Contains(NormalizeMetadataKey(element.Name.LocalName)))
+                    {
+                        var value = GetElementOwnText(element);
+                        if (!string.IsNullOrWhiteSpace(value))
+                            return value.Trim();
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static int? ParseMetadataDuration(params XElement?[] roots)
+        {
+            foreach (var key in new[] { "durationMs", "durationInMillis", "duration", "length" })
+            {
+                var value = FindMetadataValue(roots[0], roots[1], roots[2], key);
+                if (string.IsNullOrWhiteSpace(value)) continue;
+
+                if (int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var integerValue)
+                    && (key.Contains("Ms", StringComparison.OrdinalIgnoreCase)
+                        || key.Contains("Millis", StringComparison.OrdinalIgnoreCase)
+                        || integerValue > 10000))
+                {
+                    return integerValue;
+                }
+
+                var parsed = ParseTimeMs(value);
+                if (parsed.HasValue)
+                    return parsed.Value;
+            }
+
+            return null;
+        }
+
+        private static string? GetMetadataKey(XElement element)
+            => (string?)element.Attribute("key")
+                ?? (string?)element.Attribute("name")
+                ?? (string?)element.Attribute("property");
+
+        private static string? GetMetadataValue(XElement element)
+            => (string?)element.Attribute("value")
+                ?? (string?)element.Attribute("content")
+                ?? GetElementOwnText(element);
+
+        private static string GetElementOwnText(XElement element)
+            => string.Concat(element.Nodes().OfType<XText>().Select(x => x.Value)).Trim();
+
+        private static string NormalizeMetadataKey(string key)
+            => Regex.Replace(key, @"[^A-Za-z0-9]", string.Empty);
+
+        private static bool IsLanguage(string? lang, string languagePrefix)
+            => !string.IsNullOrWhiteSpace(lang)
+                && (lang.Equals(languagePrefix, StringComparison.OrdinalIgnoreCase)
+                    || lang.StartsWith(languagePrefix + "-", StringComparison.OrdinalIgnoreCase));
+
+
+        private static Dictionary<string, Dictionary<(string type, string lang), TranslationValue>> ParseTranslations(XDocument doc)
+        {
+            var result = new Dictionary<string, Dictionary<(string type, string lang), TranslationValue>>(StringComparer.Ordinal);
 
             foreach (var translation in doc.Descendants(NsItunes + "translation"))
             {
@@ -246,15 +397,29 @@ namespace Lyricify.Lyrics.Parsers
 
                     if (!result.TryGetValue(key, out var map))
                     {
-                        map = new Dictionary<(string type, string lang), string>();
+                        map = new Dictionary<(string type, string lang), TranslationValue>();
                         result[key] = map;
                     }
 
-                    map[(type, lang)] = value;
+                    map[(type, lang)] = new TranslationValue
+                    {
+                        Text = value,
+                        SpanTexts = ExtractTimedSpanTexts(textNode)
+                    };
                 }
             }
 
             return result;
+        }
+
+        private static List<string> ExtractTimedSpanTexts(XElement textNode)
+        {
+            return textNode
+                .Descendants(NsTtml + "span")
+                .Where(x => !string.IsNullOrWhiteSpace((string?)x.Attribute("begin")))
+                .Select(x => NormalizeText(x.Value))
+                .Where(x => x.Length > 0)
+                .ToList();
         }
 
         // =========================
@@ -353,7 +518,7 @@ namespace Lyricify.Lyrics.Parsers
         // =========================
         // Replacement / subtitle translations
         // =========================
-        private static ILineInfo ApplyReplacementMainOnly(ILineInfo line, string replacement)
+        private static ILineInfo ApplyReplacementMainOnly(ILineInfo line, string replacement, IReadOnlyList<string>? replacementParts)
         {
             // local helpers to keep this function self-contained
             static string NormalizeText(string s) => (s ?? string.Empty).Replace("\r", "").Replace("\n", "");
@@ -429,6 +594,26 @@ namespace Lyricify.Lyrics.Parsers
                 return new SyllableLineInfo(new[] { new SyllableInfo(newText, start, end) });
             }
 
+            static SyllableLineInfo? ReplaceSyllableLineParts(SyllableLineInfo sLine, IReadOnlyList<string>? newParts)
+            {
+                if (newParts == null || newParts.Count == 0 || newParts.Count != sLine.Syllables.Count)
+                    return null;
+
+                var newSylls = new List<ISyllableInfo>(sLine.Syllables.Count);
+                for (int i = 0; i < sLine.Syllables.Count; i++)
+                {
+                    var syllable = sLine.Syllables[i];
+                    var originalText = syllable.Text ?? string.Empty;
+                    var replacementText = NormalizeText(newParts[i]);
+
+                    var leading = Regex.Match(originalText, @"^\s+").Value;
+                    var trailing = Regex.Match(originalText, @"\s+$").Value;
+                    newSylls.Add(new SyllableInfo(leading + replacementText + trailing, syllable.StartTime, syllable.EndTime));
+                }
+
+                return new SyllableLineInfo(newSylls);
+            }
+
             // Replace a line's text (mainly for LineInfo)
             static LineInfo ReplaceLineText(LineInfo li, string newText)
             {
@@ -462,8 +647,8 @@ namespace Lyricify.Lyrics.Parsers
 
             if (line is SyllableLineInfo sMain)
             {
-                var replaced = ReplaceSyllableLineText(sMain, mainReplacement);
-                newMain = replaced;
+                newMain = ReplaceSyllableLineParts(sMain, existingSub == null ? replacementParts : null)
+                    ?? ReplaceSyllableLineText(sMain, mainReplacement);
             }
             else if (line is LineInfo liMain)
             {

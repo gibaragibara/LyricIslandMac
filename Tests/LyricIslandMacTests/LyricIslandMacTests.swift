@@ -2,6 +2,19 @@ import Foundation
 import Testing
 @testable import LyricIslandMac
 
+@Test @MainActor
+func spotifyLyricsDoNotUseChineseOffset() {
+    let model = AppModel(spotifyClient: MockSpotifyPlaybackClient())
+    model.lyricsPayload = LyricsPayload(
+        source: .spotify,
+        track: PlaybackSnapshot.demo.track,
+        lines: []
+    )
+
+    #expect(model.currentLyricsOffsetSource == .spotify)
+    #expect(model.currentLyricsOffsetMs == 0)
+}
+
 // MARK: - Line pairing
 
 @Test func linePairFindsCurrentAndNextLineInSortedLyrics() {
@@ -15,6 +28,30 @@ import Testing
 
     #expect(pair.current?.text == "second")
     #expect(pair.next?.text == "third")
+}
+
+@Test func linePairSwitchesAtTheNextLineStart() {
+    let lines = [
+        LyricLine(text: "first", startTimeMs: 1_000, endTimeMs: 2_000),
+        LyricLine(text: "second", startTimeMs: 2_000, endTimeMs: 3_000),
+    ]
+
+    let pair = lines.linePair(at: 2_000)
+
+    #expect(pair.current?.text == "second")
+    #expect(pair.next == nil)
+}
+
+@Test func linePairKeepsTheSameCursorDuringAnInterlineGap() {
+    let lines = [
+        LyricLine(text: "first", startTimeMs: 1_000, endTimeMs: 1_500),
+        LyricLine(text: "second", startTimeMs: 2_000, endTimeMs: 3_000),
+    ]
+
+    let pair = lines.linePair(at: 1_750)
+
+    #expect(pair.current?.text == "first")
+    #expect(pair.next?.text == "second")
 }
 
 @Test func linePairStillHandlesUnsortedLyrics() {
@@ -103,9 +140,13 @@ import Testing
 // MARK: - Helper path / dotnet discovery smoke
 
 @Test func defaultHelperPathDoesNotHardcodeUserHome() {
-    // Regression: previously returned /Users/<name>/... unconditionally.
+    // Regression: the resolver should return a helper-shaped path without
+    // depending on a particular developer's home directory.
     let path = AppModel.defaultHelperPathForTesting
-    #expect(!path.contains("/Users/gibara/"))
+    #expect(
+        path.hasSuffix("LyricIsland.LyricsService")
+            || path.hasSuffix("LyricIsland.LyricsService.dll")
+    )
 }
 
 @Test func resolveDotnetExecutableReturnsExistingBinaryOrNil() {

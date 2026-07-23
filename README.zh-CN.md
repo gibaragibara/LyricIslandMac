@@ -75,10 +75,10 @@ cd /Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService
 dotnet build
 ```
 
-默认 helper 路径：
+开发环境默认 helper 路径（应用会优先查找已打包的 helper）：
 
 ```text
-/Users/gibara/LyricIslandMac/lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService.dll
+lyrics-service/LyricIsland.LyricsService/bin/Debug/net10.0/LyricIsland.LyricsService
 ```
 
 ## 打包
@@ -151,8 +151,8 @@ http://127.0.0.1:766/callback
 
 - 更复杂的歌词来源排序与合并逻辑
 - 更完整的翻译/副歌词组合
-- 更生产化的凭据存储方式，例如 Keychain
+- 更完整的 provider 集成测试与错误诊断
 
 ## 致谢
 
-本项目本地 helper 中的歌词获取能力基于 [`Lyricify-Lyrics-Helper`](https://github.com/WXRIW/Lyricify-Lyrics-Helper)。该项目提供了核心的歌词解析、搜索与 provider 集成能力。
+本项目本地 helper 中的歌词获取能力基于 [`Lyricify-Lyrics-Helper`](https://github.com/WXRIW/Lyricify-Lyrics-Helper)。当前 vendored 快照为 `v0.2.0` 加上游提交 `983709b`，该项目提供了核心的歌词解析、搜索与 provider 集成能力。

@@ -25,7 +25,12 @@ final class AppModel: ObservableObject {
     @Published var overlayVisible = false
     @Published var statusText = "就绪"
     @Published var isSpotifyAuthorizationInProgress = false
-    @Published var helperExecutablePath: String = AppModel.defaultHelperExecutablePath
+    @Published var helperExecutablePath: String = AppModel.defaultHelperExecutablePath {
+        didSet {
+            guard helperExecutablePath != oldValue else { return }
+            cancelLyricsFetch()
+        }
+    }
     @Published var spotifyClientID: String {
         didSet {
             UserDefaults.standard.set(spotifyClientID, forKey: Self.spotifyClientIDKey)
@@ -33,12 +38,12 @@ final class AppModel: ObservableObject {
     }
     @Published var spotifyRefreshToken: String {
         didSet {
-            KeychainStore.set(spotifyRefreshToken, forKey: Self.spotifyRefreshTokenKey)
+            UserDefaults.standard.set(spotifyRefreshToken, forKey: Self.spotifyRefreshTokenKey)
         }
     }
     @Published private(set) var spotifyAccessToken: String {
         didSet {
-            KeychainStore.set(spotifyAccessToken, forKey: Self.spotifyAccessTokenKey)
+            UserDefaults.standard.set(spotifyAccessToken, forKey: Self.spotifyAccessTokenKey)
         }
     }
     @Published private(set) var spotifyAccessTokenExpiresAt: Date? {
@@ -51,7 +56,7 @@ final class AppModel: ObservableObject {
     }
     @Published var spotifySpDc: String {
         didSet {
-            KeychainStore.set(spotifySpDc, forKey: Self.spotifySpDcKey)
+            UserDefaults.standard.set(spotifySpDc, forKey: Self.spotifySpDcKey)
         }
     }
     @Published var overlayOpacity: Double {
@@ -113,6 +118,7 @@ final class AppModel: ObservableObject {
     @Published var preferredChineseLyricsSource: LyricsSource {
         didSet {
             UserDefaults.standard.set(preferredChineseLyricsSource.rawValue, forKey: Self.preferredChineseLyricsSourceKey)
+            cancelLyricsFetch()
             lyricsCache.removeAll()
             lyricsPayload = nil
             currentLine = nil
@@ -137,7 +143,9 @@ final class AppModel: ObservableObject {
             return .qqMusic
         case .netease:
             return .netease
-        default:
+        case .spotify:
+            return .spotify
+        case nil:
             return preferredChineseLyricsSource == .qqMusic ? .qqMusic : .netease
         }
     }
@@ -168,40 +176,41 @@ final class AppModel: ObservableObject {
     }
     private var lastLyricsTrackID: String?
     private var lyricsFetchTrackIDInFlight: String?
+    private var lyricsFetchTask: Task<Void, Never>?
+    private var lyricsFetchGeneration: UInt64 = 0
     private var lyricsCache = LRUCache<String, LyricsPayload>(maxSize: 20)
     private var isPlaybackRefreshInFlight = false
     private var accessTokenRefreshTask: Task<String, Error>?
     private var overlayAllowedByUser = true
     private var realtimeDisplayActivity: NSObjectProtocol?
-    private static let localTickIntervalSeconds: TimeInterval = 0.1
-    private static let localTickToleranceSeconds: TimeInterval = 0.02
-    /// ~8s while playing.
-    private static let playbackNetworkSyncIntervalTicks: Int = 80
-    /// ~30s while paused / no active playback.
-    private static let playbackNetworkSyncIntervalTicksWhenPaused: Int = 300
+    // Keep lyric cursor changes within one display frame of their timestamp.
+    private static let localTickIntervalSeconds: TimeInterval = 1.0 / 60.0
+    private static let localTickToleranceSeconds: TimeInterval = 0.002
+    /// ~8s while playing. Derive tick counts from the local clock so changing
+    /// cursor cadence does not change the network request cadence.
+    private static let playbackNetworkSyncIntervalTicks: Int = max(
+        1,
+        Int((8.0 / localTickIntervalSeconds).rounded())
+    )
+    /// Keep paused-state recovery responsive when playback starts externally.
+    private static let playbackNetworkSyncIntervalTicksWhenPaused: Int = max(
+        1,
+        Int((8.0 / localTickIntervalSeconds).rounded())
+    )
 
     init(
         spotifyClient: SpotifyPlaybackClient = SpotifyWebPlaybackClient()
     ) {
         self.spotifyClient = spotifyClient
         self.spotifyClientID = UserDefaults.standard.string(forKey: Self.spotifyClientIDKey) ?? ""
-        self.spotifyRefreshToken = KeychainStore.loadMigrating(
-            account: Self.spotifyRefreshTokenKey,
-            legacyUserDefaultsKey: Self.spotifyRefreshTokenKey
-        )
-        self.spotifyAccessToken = KeychainStore.loadMigrating(
-            account: Self.spotifyAccessTokenKey,
-            legacyUserDefaultsKey: Self.spotifyAccessTokenKey
-        )
+        self.spotifyRefreshToken = UserDefaults.standard.string(forKey: Self.spotifyRefreshTokenKey) ?? ""
+        self.spotifyAccessToken = UserDefaults.standard.string(forKey: Self.spotifyAccessTokenKey) ?? ""
         if let ts = UserDefaults.standard.object(forKey: Self.spotifyAccessTokenExpiresAtKey) as? TimeInterval {
             self.spotifyAccessTokenExpiresAt = Date(timeIntervalSince1970: ts)
         } else {
             self.spotifyAccessTokenExpiresAt = nil
         }
-        self.spotifySpDc = KeychainStore.loadMigrating(
-            account: Self.spotifySpDcKey,
-            legacyUserDefaultsKey: Self.spotifySpDcKey
-        )
+        self.spotifySpDc = UserDefaults.standard.string(forKey: Self.spotifySpDcKey) ?? ""
         let savedOpacity = UserDefaults.standard.object(forKey: Self.overlayOpacityKey) as? Double
         self.overlayOpacity = min(max(savedOpacity ?? 0.96, 0.45), 1.0)
         let savedScale = UserDefaults.standard.object(forKey: Self.overlayScaleKey) as? Double
@@ -278,6 +287,7 @@ final class AppModel: ObservableObject {
                 let trackChanged = playback.track.id != snapshot.track.id
                 applyPlaybackSnapshot(snapshot, evaluatedAt: snapshotEvaluatedAt)
                 if trackChanged {
+                    cancelLyricsFetch()
                     if let cached = lyricsCache.get(snapshot.track.id) {
                         lyricsPayload = cached
                         currentLine = nil
@@ -338,48 +348,67 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // Prefer Chinese sources in request order; helper uses that order as tiebreaker.
+        // The helper resolves sources in request order; retain a generation so a
+        // canceled request cannot publish into a newer track/source selection.
         let sources = chineseLyricsFallbackChain + [.spotify]
+        lyricsFetchTask?.cancel()
+        lyricsFetchGeneration &+= 1
+        let requestGeneration = lyricsFetchGeneration
+        lyricsFetchTrackIDInFlight = track.id
 
-        Task { @MainActor in
-            lyricsFetchTrackIDInFlight = track.id
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
             defer {
-                if lyricsFetchTrackIDInFlight == track.id {
-                    lyricsFetchTrackIDInFlight = nil
+                if self.lyricsFetchGeneration == requestGeneration {
+                    self.lyricsFetchTrackIDInFlight = nil
+                    self.lyricsFetchTask = nil
                 }
             }
             let client = DotnetLyricsServiceClient(executablePath: path)
-            let token = try? await ensureSpotifyAccessToken(forceRefresh: false)
+            let token = try? await self.ensureSpotifyAccessToken(forceRefresh: false)
+            guard !Task.isCancelled, self.lyricsFetchGeneration == requestGeneration else { return }
 
             do {
                 let payload = try await client.fetchLyrics(
                     for: track,
                     sources: sources,
                     spotifyAccessToken: token,
-                    spotifySpDc: spotifySpDc
+                    spotifySpDc: self.spotifySpDc
                 )
                 // Drop stale results if the user already switched tracks.
-                guard playback.track.id == track.id else { return }
+                guard !Task.isCancelled,
+                      self.lyricsFetchGeneration == requestGeneration,
+                      self.playback.track.id == track.id else { return }
                 guard !payload.lines.isEmpty else {
-                    statusText = "未找到可用歌词"
+                    self.statusText = "未找到可用歌词"
                     return
                 }
 
-                lyricsPayload = payload
-                currentLine = nil
-                nextLine = nil
-                lastLyricsTrackID = track.id
-                lyricsCache.set(payload, forKey: track.id)
-                statusText = "歌词加载成功（来源：\(payload.source.displayName)）"
-                updateLyricCursor()
-                refreshOverlayIfNeeded()
+                self.lyricsPayload = payload
+                self.currentLine = nil
+                self.nextLine = nil
+                self.lastLyricsTrackID = track.id
+                self.lyricsCache.set(payload, forKey: track.id)
+                self.statusText = "歌词加载成功（来源：\(payload.source.displayName)）"
+                self.updateLyricCursor()
+                self.refreshOverlayIfNeeded()
             } catch {
-                guard playback.track.id == track.id else { return }
-                statusText = autoTriggered
+                guard !Task.isCancelled,
+                      self.lyricsFetchGeneration == requestGeneration,
+                      self.playback.track.id == track.id else { return }
+                self.statusText = autoTriggered
                     ? "Spotify 播放状态已同步，但歌词加载失败: \(error.localizedDescription)"
                     : "歌词服务失败: \(error.localizedDescription)"
             }
         }
+        lyricsFetchTask = task
+    }
+
+    private func cancelLyricsFetch() {
+        lyricsFetchGeneration &+= 1
+        lyricsFetchTask?.cancel()
+        lyricsFetchTask = nil
+        lyricsFetchTrackIDInFlight = nil
     }
 
     func refreshSpotifyAccessTokenManually() {
@@ -537,10 +566,11 @@ final class AppModel: ObservableObject {
 
     private var isPlaybackStillInsideCurrentLyricCursor: Bool {
         if let currentLine {
-            let explicitEnd = currentLine.endTimeMs ?? Int.max
             let nextStart = nextLine?.startTimeMs ?? Int.max
-            let effectiveEnd = min(explicitEnd, nextStart)
-            return lyricsProgressMs >= currentLine.startTimeMs && lyricsProgressMs < effectiveEnd
+            // An explicit end can leave a gap before the next line. linePair()
+            // still returns this same current/next pair during that gap, so
+            // keep the cursor stable until the next line actually starts.
+            return lyricsProgressMs >= currentLine.startTimeMs && lyricsProgressMs < nextStart
         }
 
         if let nextLine {
@@ -826,8 +856,7 @@ final class AppModel: ObservableObject {
                 .appendingPathComponent("LyricsService", isDirectory: true)
                 .appendingPathComponent("LyricIsland.LyricsService")
                 .path
-            if fileManager.isExecutableFile(atPath: bundledExecutable)
-                || fileManager.fileExists(atPath: bundledExecutable) {
+            if fileManager.isExecutableFile(atPath: bundledExecutable) {
                 return bundledExecutable
             }
 
@@ -862,7 +891,10 @@ final class AppModel: ObservableObject {
             guard seen.insert(rootPath).inserted else { continue }
             for relative in relativeCandidates {
                 let candidate = root.appendingPathComponent(relative).path
-                if fileManager.fileExists(atPath: candidate) {
+                let available = relative.lowercased().hasSuffix(".dll")
+                    ? fileManager.fileExists(atPath: candidate)
+                    : fileManager.isExecutableFile(atPath: candidate)
+                if available {
                     return candidate
                 }
             }

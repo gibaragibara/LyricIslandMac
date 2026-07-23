@@ -16,7 +16,6 @@ struct OverlayPillView: View {
         .preferredColorScheme(.dark)
         .ignoresSafeArea()
         .animation(.spring(response: 0.26, dampingFraction: 0.84), value: model.isExpanded)
-        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: surfaceWidth)
         .animation(.easeInOut(duration: 0.18), value: model.isPointerHovering)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -264,6 +263,11 @@ private struct KaraokeLineText: View {
             isPlaying: isPlaying
         )
         .frame(maxWidth: .infinity)
+        // The parent surface can animate when its layout changes. A lyric line
+        // must still replace its text and mask immediately at the line boundary.
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }
 
@@ -460,12 +464,15 @@ private final class KaraokeNSView: NSView {
         }
 
         let lineChanged = self.lyricLine != lyricLine
+        let playbackStateChanged = self.isPlaying != isPlaying
+        let staticProgressChanged = abs(self.staticProgress - staticProgress) >= 0.0005
+        let anchorChanged = self.anchorMs != anchorMs || self.anchorDate != anchorDate
         self.lyricLine = lyricLine
         self.anchorMs = anchorMs
         self.anchorDate = anchorDate
         self.isPlaying = isPlaying
         self.staticProgress = staticProgress
-        if lineChanged || sizeInvalidated {
+        if lineChanged || sizeInvalidated || playbackStateChanged || staticProgressChanged || anchorChanged {
             lastAppliedProgress = -1
             applyProgress(force: true)
         }
@@ -488,11 +495,35 @@ private final class KaraokeNSView: NSView {
         let p = currentProgress()
         if !force, abs(p - lastAppliedProgress) < 0.0005 { return }
         lastAppliedProgress = p
-        let bounds = highlightTextLayer.bounds
+        let textBounds = highlightedTextBounds()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        maskLayer.frame = CGRect(x: 0, y: 0, width: bounds.width * CGFloat(p), height: bounds.height)
+        maskLayer.frame = CGRect(
+            x: textBounds.minX,
+            y: textBounds.minY,
+            width: textBounds.width * CGFloat(p),
+            height: textBounds.height
+        )
         CATransaction.commit()
+    }
+
+    private func highlightedTextBounds() -> CGRect {
+        let bounds = highlightTextLayer.bounds
+        guard let font = currentFont, !currentText.isEmpty else {
+            return bounds
+        }
+
+        let measuredWidth = ceil((currentText as NSString).size(withAttributes: [.font: font]).width)
+        let originX: CGFloat
+        switch currentAlignment {
+        case .center:
+            originX = (bounds.width - measuredWidth) / 2
+        case .right:
+            originX = bounds.width - measuredWidth
+        default:
+            originX = 0
+        }
+        return CGRect(x: originX, y: 0, width: measuredWidth, height: bounds.height)
     }
 
     private func startDisplayLinkIfNeeded() {
