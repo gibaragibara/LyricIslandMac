@@ -21,7 +21,9 @@ final class AppModel: ObservableObject {
     @Published var playback: PlaybackSnapshot = .demo
     @Published var lyricsPayload: LyricsPayload?
     @Published var currentLine: LyricLine?
-    @Published var nextLine: LyricLine?
+    // Only the current line is consumed by the menu-bar view. Keep the look-ahead
+    // line internal so each cursor change does not publish a second UI update.
+    private var nextLine: LyricLine?
     @Published var overlayVisible = false
     @Published var statusText = "就绪"
     @Published var isSpotifyAuthorizationInProgress = false
@@ -183,9 +185,11 @@ final class AppModel: ObservableObject {
     private var accessTokenRefreshTask: Task<String, Error>?
     private var overlayAllowedByUser = true
     private var realtimeDisplayActivity: NSObjectProtocol?
-    // Keep lyric cursor changes within one display frame of their timestamp.
-    private static let localTickIntervalSeconds: TimeInterval = 1.0 / 60.0
-    private static let localTickToleranceSeconds: TimeInterval = 0.002
+    // The overlay owns the 60 Hz animation. The app-level cursor only needs to
+    // select the active line, so 30 Hz avoids needless main-thread wakeups while
+    // keeping line changes within roughly 33 ms in normal playback.
+    private static let localTickIntervalSeconds: TimeInterval = 1.0 / 30.0
+    private static let localTickToleranceSeconds: TimeInterval = 0.004
     /// ~8s while playing. Derive tick counts from the local clock so changing
     /// cursor cadence does not change the network request cadence.
     private static let playbackNetworkSyncIntervalTicks: Int = max(

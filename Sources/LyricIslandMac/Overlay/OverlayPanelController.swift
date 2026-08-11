@@ -136,6 +136,23 @@ final class OverlayPanelController {
     private var cachedTextKey: String = ""
     private var cachedScale: Double = 0
     private var cachedWidths: CachedTextWidths = .zero
+    private var textWidthCache: [TextWidthCacheKey: CGFloat] = [:]
+
+    private enum TextWidthRole: Hashable {
+        case compactPrimary
+        case compactSecondary
+        case expandedLine
+        case expandedSubline
+        case expandedNextLine
+        case title
+        case subtitle
+    }
+
+    private struct TextWidthCacheKey: Hashable {
+        let text: String
+        let role: TextWidthRole
+        let scale: Double
+    }
 
     private struct CachedTextWidths {
         var compactPrimary: CGFloat = 0
@@ -163,6 +180,15 @@ final class OverlayPanelController {
         panel?.orderOut(nil)
         renderedModel = nil
         updatePointerHovering(force: false)
+
+        // `orderOut` does not remove an NSView from its window. Mark the stored
+        // model as stopped so KaraokeNSView tears down its display link while
+        // the overlay is hidden.
+        if modelStore.model.isPlaying {
+            var hiddenModel = modelStore.model
+            hiddenModel.isPlaying = false
+            modelStore.model = hiddenModel
+        }
     }
 
     func setDisplayMode(_ displayMode: OverlayDisplayMode) {
@@ -210,13 +236,13 @@ final class OverlayPanelController {
             let titleFont = NSFont.systemFont(ofSize: 13 * scale, weight: .semibold)
             let subtitleFont = NSFont.systemFont(ofSize: 10.5 * scale, weight: .regular)
             cachedWidths = CachedTextWidths(
-                compactPrimary: (decorated.compactPrimaryLine as NSString).size(withAttributes: [.font: primaryFont]).width,
-                compactSecondary: (decorated.compactSecondaryLine as NSString).size(withAttributes: [.font: secondaryFont]).width,
-                expandedLine: (decorated.currentLine as NSString).size(withAttributes: [.font: expandedPrimaryFont]).width,
-                expandedSubline: ((decorated.currentSubline ?? "") as NSString).size(withAttributes: [.font: expandedSublineFont]).width,
-                expandedNextLine: ((decorated.nextLine ?? "") as NSString).size(withAttributes: [.font: expandedNextLineFont]).width,
-                title: (decorated.title as NSString).size(withAttributes: [.font: titleFont]).width,
-                subtitle: (decorated.subtitle as NSString).size(withAttributes: [.font: subtitleFont]).width
+                compactPrimary: measureTextWidth(decorated.compactPrimaryLine, role: .compactPrimary, scale: scale, font: primaryFont),
+                compactSecondary: measureTextWidth(decorated.compactSecondaryLine, role: .compactSecondary, scale: scale, font: secondaryFont),
+                expandedLine: measureTextWidth(decorated.currentLine, role: .expandedLine, scale: scale, font: expandedPrimaryFont),
+                expandedSubline: measureTextWidth(decorated.currentSubline ?? "", role: .expandedSubline, scale: scale, font: expandedSublineFont),
+                expandedNextLine: measureTextWidth(decorated.nextLine ?? "", role: .expandedNextLine, scale: scale, font: expandedNextLineFont),
+                title: measureTextWidth(decorated.title, role: .title, scale: scale, font: titleFont),
+                subtitle: measureTextWidth(decorated.subtitle, role: .subtitle, scale: scale, font: subtitleFont)
             )
         }
         let w = cachedWidths
@@ -259,6 +285,20 @@ final class OverlayPanelController {
         let panelWidth = max(700.0 * scale, expandedWidth)
         layout(panel: panel, on: screen, expandedWidth: panelWidth, expandedHeight: expandedHeight)
         updatePointerHovering(force: isPointerInsideVisibleSurface())
+    }
+
+    private func measureTextWidth(_ text: String, role: TextWidthRole, scale: Double, font: NSFont) -> CGFloat {
+        let key = TextWidthCacheKey(text: text, role: role, scale: scale)
+        if let cachedWidth = textWidthCache[key] {
+            return cachedWidth
+        }
+
+        let width = (text as NSString).size(withAttributes: [.font: font]).width
+        if textWidthCache.count >= 256 {
+            textWidthCache.removeAll(keepingCapacity: true)
+        }
+        textWidthCache[key] = width
+        return width
     }
 
     private func makePanel() -> NSPanel {

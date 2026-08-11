@@ -311,7 +311,14 @@ private struct KaraokeLineRepresentable: NSViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: KaraokeNSView, context: Context) -> CGSize? {
         let intrinsic = nsView.intrinsicContentSize
-        let width = proposal.width.map { min($0, intrinsic.width) } ?? intrinsic.width
+        // The parent already owns the overlay width. Keeping that width stable
+        // prevents every lyric change from triggering another width negotiation.
+        let width: CGFloat
+        if let proposedWidth = proposal.width, proposedWidth.isFinite, proposedWidth > 0 {
+            width = proposedWidth
+        } else {
+            width = intrinsic.width
+        }
         return CGSize(width: width, height: intrinsic.height)
     }
 }
@@ -324,6 +331,7 @@ private final class KaraokeNSView: NSView {
 
     private var currentText: String = ""
     private var currentFont: NSFont?
+    private var measuredTextSize: NSSize = .zero
     private var currentAlignment: NSTextAlignment = .center
     private var lyricLine: LyricLine?
     private var anchorMs: Int = 0
@@ -389,12 +397,10 @@ private final class KaraokeNSView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        guard !currentText.isEmpty, let font = currentFont else {
+        guard !currentText.isEmpty, currentFont != nil else {
             return NSSize(width: NSView.noIntrinsicMetric, height: ceil(currentFont?.boundingRectForFont.height ?? 0))
         }
-        let attrs: [NSAttributedString.Key: Any] = [.font: font]
-        let size = (currentText as NSString).size(withAttributes: attrs)
-        return NSSize(width: ceil(size.width), height: ceil(size.height))
+        return measuredTextSize
     }
 
     override func layout() {
@@ -431,6 +437,7 @@ private final class KaraokeNSView: NSView {
 
     func apply(text: String, font: NSFont, alignment: NSTextAlignment, staticProgress: Double, lyricLine: LyricLine?, anchorMs: Int, anchorDate: Date, isPlaying: Bool) {
         var sizeInvalidated = false
+        var fontChanged = false
         if currentText != text {
             currentText = text
             baseTextLayer.string = text
@@ -445,6 +452,7 @@ private final class KaraokeNSView: NSView {
             highlightTextLayer.font = ctFont
             highlightTextLayer.fontSize = font.pointSize
             sizeInvalidated = true
+            fontChanged = true
         }
         if currentAlignment != alignment {
             currentAlignment = alignment
@@ -460,7 +468,13 @@ private final class KaraokeNSView: NSView {
             highlightTextLayer.alignmentMode = mode
         }
         if sizeInvalidated {
-            invalidateIntrinsicContentSize()
+            let previousHeight = measuredTextSize.height
+            updateMeasuredTextSize()
+            // With a fixed parent width, a line change only changes the cached
+            // width. Invalidate layout when the font or measured height changes.
+            if fontChanged || measuredTextSize.height != previousHeight {
+                invalidateIntrinsicContentSize()
+            }
         }
 
         let lineChanged = self.lyricLine != lyricLine
@@ -509,11 +523,11 @@ private final class KaraokeNSView: NSView {
 
     private func highlightedTextBounds() -> CGRect {
         let bounds = highlightTextLayer.bounds
-        guard let font = currentFont, !currentText.isEmpty else {
+        guard currentFont != nil, !currentText.isEmpty, measuredTextSize.width > 0 else {
             return bounds
         }
 
-        let measuredWidth = ceil((currentText as NSString).size(withAttributes: [.font: font]).width)
+        let measuredWidth = measuredTextSize.width
         let originX: CGFloat
         switch currentAlignment {
         case .center:
@@ -524,6 +538,15 @@ private final class KaraokeNSView: NSView {
             originX = 0
         }
         return CGRect(x: originX, y: 0, width: measuredWidth, height: bounds.height)
+    }
+
+    private func updateMeasuredTextSize() {
+        guard !currentText.isEmpty, let font = currentFont else {
+            measuredTextSize = .zero
+            return
+        }
+        let size = (currentText as NSString).size(withAttributes: [.font: font])
+        measuredTextSize = NSSize(width: ceil(size.width), height: ceil(size.height))
     }
 
     private func startDisplayLinkIfNeeded() {
